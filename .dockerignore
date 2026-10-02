@@ -1,0 +1,8 @@
+.env
+.venv
+.git
+tests
+kindle
+docs
+__pycache__
+.pytest_cache

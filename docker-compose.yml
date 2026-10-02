@@ -1,0 +1,29 @@
+# Standalone compose project: joins the existing docker_default network so it can
+# reach the `influxdb` container by name, without touching ../docker-compose.yml.
+name: kindle-solar-dashboard
+
+services:
+  kindle-solar-dashboard:
+    build: .
+    image: kindle-solar-dashboard:latest
+    container_name: kindle-solar-dashboard
+    restart: unless-stopped
+    ports:
+      - "8765:8000"
+    env_file: .env
+    environment:
+      - INFLUX_URL=${INFLUX_URL:-http://influxdb:8086}
+      - INFLUX_ORG=${INFLUX_ORG:-sp_inc}
+      - INFLUX_BUCKET=${INFLUX_BUCKET:-victron}
+      - TZ=${TZ:-America/Los_Angeles}
+      - PRICE_PER_KWH=${PRICE_PER_KWH:-0.48}
+      - REFRESH_SECONDS=${REFRESH_SECONDS:-30}
+    read_only: true
+    tmpfs:
+      - /tmp
+    networks:
+      - docker_default
+
+networks:
+  docker_default:
+    external: true
