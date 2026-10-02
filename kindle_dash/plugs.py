@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 log = logging.getLogger("kindle_dash.plugs")
 
 TIMEOUT_S = 5
+HISTORY_MAX_AGE_S = 600  # daily totals change slowly; re-read them this often
 
 
 @dataclass(frozen=True)
@@ -26,7 +29,7 @@ class Plug:
     kind: str = ""  # what's plugged in, from KASA_HOSTS ("light", "ev charger", ...)
     power_w: float | None = None  # energy monitoring, where the plug has it
     today_kwh: float | None = None
-    month_kwh: float | None = None
+    last30_kwh: float | None = None  # the 30 full days before today, like the Kasa app's "past 30 days"
 
 
 def _reading(dev, feature: str) -> float | None:
@@ -45,6 +48,7 @@ class KasaPlugs:
         self._names: dict[str, str] = {}  # last known alias, kept while unreachable
         self.plugs: list[Plug] = [Plug(h, h, None, self.kinds.get(h, "")) for h in hosts]
         self._toggles: dict[str, int] = {}  # per host, bumped by each toggle
+        self._history: dict[str, tuple[float, date, float | None]] = {}  # host -> (read at, for day, last-30-days kWh)
 
     async def _device(self, host: str):
         dev = self._devices.get(host)
@@ -70,12 +74,35 @@ class KasaPlugs:
                 # whole watts: finer would redraw the page for noise
                 None if (w := _reading(dev, "current_consumption")) is None else float(round(w)),
                 _reading(dev, "consumption_today"),
-                _reading(dev, "consumption_this_month"),
+                await self._last30(host, dev),
             )
         except Exception as exc:
             log.warning("plug %s: %s", host, exc)
             await self._forget(host)  # reconnect from scratch next time
             return Plug(host, self._names.get(host, host), None, self.kinds.get(host, ""))
+
+    async def _last30(self, host: str, dev) -> float | None:
+        """kWh over the 30 full days before today, from the plug's daily totals (this month and last)."""
+        today = date.today()
+        cached = self._history.get(host)
+        if cached and cached[1] == today and time.monotonic() - cached[0] < HISTORY_MAX_AGE_S:
+            return cached[2]
+        energy = dev.modules.get("Energy")
+        if energy is None:
+            return None
+        try:
+            days: dict[date, float] = {}
+            prev = today.replace(day=1) - timedelta(days=1)
+            for month in (prev, today):
+                for day, kwh in (await energy.get_daily_stats(year=month.year, month=month.month, kwh=True)).items():
+                    days[month.replace(day=int(day))] = float(kwh)
+            since = today - timedelta(days=30)
+            total = sum(v for d, v in days.items() if since <= d < today)
+        except Exception as exc:
+            log.warning("plug %s daily totals: %s", host, exc)
+            return cached[2] if cached else None
+        self._history[host] = (time.monotonic(), today, total)
+        return total
 
     async def _forget(self, host: str) -> None:
         dev = self._devices.pop(host, None)

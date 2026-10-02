@@ -314,7 +314,7 @@ class _Ctx:
 
 
 # Pages, in tab order: (name used in URLs and taps, tab label)
-PAGES = (("solar", "SOLAR"), ("lights", "LIGHTS"))
+PAGES = (("solar", "SOLAR"), ("lights", "POWER"))  # "lights" stays the URL name; Kindles remember it
 HEADER_RULE_Y = 126  # the rule under the header; tabs sit above it
 TAB_SIZE, TAB_PAD, TAB_GAP = 44, 28, 16
 
@@ -620,19 +620,22 @@ def fmt_kwh(v: float) -> str:
     return f"{v:.2f} kWh" if v < 10 else f"{v:,.1f} kWh"
 
 
-def _plug_tile(d: ImageDraw.ImageDraw, box, plug: Plug) -> None:
+def _plug_tile(d: ImageDraw.ImageDraw, box, plug: Plug, confirm: bool = False) -> None:
     """ON is solid black, OFF is outlined, unreachable is pale gray.
 
-    Top: what it powers, then the name (two lines). Bottom: ON/OFF, and the
-    plug's power now with its energy today and this month.
+    Top: what it powers, then the name (two lines). Bottom: energy today and
+    over the last 30 days, then ON/OFF and the power now. While
+    `confirm`, the bottom asks for a second tap instead.
     """
     x0, y0, x1, y1 = box
     on = plug.on is True
     if plug.on is None:
         bg, fg, sub = FAINT, DARK, DARK
+    elif confirm:
+        bg, fg, sub = WHITE, BLACK, DARK
     else:
         bg, fg, sub = (BLACK, WHITE, LIGHT) if on else (WHITE, BLACK, DARK)
-    d.rounded_rectangle(box, radius=18, fill=bg, outline=BLACK, width=4)
+    d.rounded_rectangle(box, radius=18, fill=bg, outline=BLACK, width=12 if confirm else 4)
     y = y0 + 24
     if plug.kind:
         _text(d, (x0 + 28, y), plug.kind.upper(), 24, bold=True, fill=sub)
@@ -643,15 +646,23 @@ def _plug_tile(d: ImageDraw.ImageDraw, box, plug: Plug) -> None:
     if plug.on is None:
         _text(d, (x0 + 28, y1 - 30), "OFFLINE", 60, bold=True, fill=fg, anchor="ls")
         return
+    if confirm:
+        _text(d, (x0 + 28, y1 - 104), "TAP AGAIN TO", 36, bold=True, fill=fg, anchor="ls")
+        _text(d, (x0 + 28, y1 - 30), f"TURN {'OFF' if on else 'ON'}", 72, bold=True, fill=fg, anchor="ls")
+        return
+    # energy over the state line, so long figures never meet the big ON/OFF
+    for i, (v, when) in enumerate(((plug.today_kwh, "today"), (plug.last30_kwh, "last 30 days"))):
+        if v is not None:
+            _text(d, (x0 + 28, y1 - 150 + i * 34), f"{fmt_kwh(v)} {when}", 26, fill=sub, anchor="ls")
     _text(d, (x0 + 28, y1 - 30), "ON" if on else "OFF", 84, bold=True, fill=fg, anchor="ls")
     if plug.power_w is not None:
-        _text(d, (x1 - 28, y1 - 100), fmt_watts(plug.power_w), 48, bold=True, fill=fg, anchor="rs")
-    for i, (v, when) in enumerate(((plug.today_kwh, "today"), (plug.month_kwh, "this month"))):
-        if v is not None:
-            _text(d, (x1 - 28, y1 - 62 + i * 32), f"{fmt_kwh(v)} {when}", 24, fill=sub, anchor="rs")
+        _text(d, (x1 - 28, y1 - 30), fmt_watts(plug.power_w), 56, bold=True, fill=fg, anchor="rs")
 
 
-def render_lights(plugs: list[Plug], now: datetime, tz, layout: str = "portrait", kindle: KindleBattery | None = None) -> Image.Image:
+def render_lights(
+    plugs: list[Plug], now: datetime, tz, layout: str = "portrait", kindle: KindleBattery | None = None, confirm: str | None = None
+) -> Image.Image:
+    """A tile per plug; the plug whose host is `confirm` asks for a second tap."""
     img = Image.new("L", size(layout), WHITE)
     w, h = img.size
     header(img, "lights", now.astimezone(tz), kindle)
@@ -659,7 +670,7 @@ def render_lights(plugs: list[Plug], now: datetime, tz, layout: str = "portrait"
     if not plugs:
         _text(d, (w / 2, h / 2), "No plugs configured (KASA_HOSTS)", 40, bold=True, anchor="mm")
     for box, plug in zip(plug_boxes(layout, len(plugs)), plugs):
-        _plug_tile(d, box, plug)
+        _plug_tile(d, box, plug, plug.host == confirm)
     reachable = sum(p.on is not None for p in plugs)
     total = sum(p.power_w for p in plugs if p.on is not None and p.power_w is not None)
     _text(d, (w - M, h - 16), f"Kasa plugs  \u00b7  {fmt_watts(total)} total  \u00b7  {reachable} of {len(plugs)} reachable", 22, fill=DARK, anchor="rs")

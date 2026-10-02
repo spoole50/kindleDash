@@ -12,7 +12,7 @@ Landscape (`/landscape.png`):
 
 ![landscape](docs/sample-landscape.png)
 
-Lights tab (`/portrait.png?page=lights`):
+Power tab (`/portrait.png?page=lights`):
 
 ![lights](docs/sample-lights.png)
 
@@ -31,13 +31,18 @@ Lights tab (`/portrait.png?page=lights`):
 | Solar today Wh / $, battery used today Wh / $ | "Solar Production" / "Battery Usage" integrals, from local midnight |
 | Production per day (7 days, today hatched since it's partial) | "Production Per Day" |
 
-### Lights page
+### Power page
 
-The **LIGHTS** tab shows a big tile per Kasa smart plug (`KASA_HOSTS`): solid
+The **POWER** tab (`page=lights` in URLs) shows a big tile per Kasa smart plug (`KASA_HOSTS`): solid
 black is ON, outlined is OFF, pale gray is unreachable. Tap a tile to toggle it.
 Each tile shows what the plug powers (from `KASA_HOSTS`), its name on up to two lines,
 and, for plugs with energy monitoring like the EP25, the power now and kWh today and
-this month. The footer shows the total.
+over the last 30 days. Like the Kasa app's "past 30 days", that's the 30 full days before
+today, summed from the plug's daily totals, which are re-read every 10 minutes. The footer shows the total power.
+
+Plugs whose kind is in `CONFIRM_KINDS` (default: `ev charger`) need two taps on the
+Kindle: the first turns the tile into **TAP AGAIN TO TURN OFF/ON** for 10 seconds, and
+the second switches it. Tapping anything else cancels. The admin page switches them in one press.
 The Pi talks to the plugs directly on the LAN (python-kasa), so nothing changes in
 Apple Home, and a change made either place shows up in the other. The page
 re-reads the plugs every `LIGHTS_REFRESH_SECONDS`. The Kindle picks up changes made elsewhere at its next poll.
@@ -103,6 +108,7 @@ status, a **Rotate Kindle 90°** button and a button per plug.
 | `ADMIN_PASSWORD` | – | **required** for `/admin` and `/status` (user `admin`) |
 | `KASA_HOSTS` | – | comma-separated plug IPs for the lights page, in display order, each optionally `=kind` for the label on its tile, e.g. `192.168.113.14=light,192.168.113.36=ev charger` |
 | `LIGHTS_REFRESH_SECONDS` | `15` | how often plug states are re-read |
+| `CONFIRM_KINDS` | `ev charger` | comma-separated plug kinds that need a second tap on the Kindle; empty = none |
 | `TOUCH_SWAP_XY` / `TOUCH_FLIP_X` / `TOUCH_FLIP_Y` / `TOUCH_MAX_X` / `TOUCH_MAX_Y` | off / off / off / `1235` / `1647` | maps raw touch coordinates to panel pixels; the defaults assume they already match (see [Taps](#taps)) |
 
 ### Endpoints
@@ -215,7 +221,7 @@ Set `TOKEN` in `config.sh` to the Pi's `CONTROL_TOKEN`. A touch shorter than
 out what's under it, using the same geometry it drew with, and replies:
 
 - **tab**: the tab flashes black and the Kindle fetches the other page (full refresh)
-- **plug tile**: the tile flashes, the plug toggles, and the Kindle fetches the redrawn page (partial refresh)
+- **plug tile**: the tile flashes, the plug toggles, and the Kindle fetches the redrawn page (partial refresh). For a `CONFIRM_KINDS` plug, the first tap only asks for a second one.
 - **nothing**: no reply body, nothing happens
 
 The 2 s touch-and-hold still rotates. The current page is saved in

@@ -9,6 +9,7 @@ import hmac
 import html
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -26,6 +27,7 @@ log = logging.getLogger("kindle_dash")
 
 KINDLE_REPORT_MAX_AGE_S = 15 * 60  # hide the Kindle's battery after this long without a report
 PAGE_NAMES = tuple(name for name, _ in render.PAGES)
+CONFIRM_S = 10  # how long a "tap again" prompt waits for the second tap
 
 
 class State:
@@ -46,6 +48,7 @@ class State:
             for lay in render.LAYOUTS
         }
         self.plugs = KasaPlugs(settings.kasa_hosts, dict(settings.kasa_kinds))
+        self.confirm: tuple[str, float] | None = None  # (plug host, monotonic deadline) awaiting a second tap
         self.lights_polled = False
         self.last_render: datetime | None = None
         self.last_success: datetime | None = None
@@ -108,13 +111,24 @@ class State:
             self.good_images = self._render_all(self.snapshot)
             self._publish(self.good_images)
 
+    def armed(self) -> str | None:
+        """The plug waiting for a confirming tap, if its prompt hasn't expired."""
+        if self.confirm and time.monotonic() < self.confirm[1]:
+            return self.confirm[0]
+        return None
+
+    def needs_confirm(self, host: str) -> bool:
+        return dict(self.s.kasa_kinds).get(host, "").lower() in self.s.confirm_kinds
+
     def render_lights(self) -> None:
         """Redraw the lights page from the last plug states (once they've been read)."""
         if not self.lights_polled:
             return
         with self.lights_lock:
-            plugs, kindle = list(self.plugs.plugs), self.kindle_battery()
-            self._publish({lay: render.render_lights(plugs, self.now(), self.s.zone, lay, kindle) for lay in render.LAYOUTS}, "lights")
+            plugs, kindle, confirm = list(self.plugs.plugs), self.kindle_battery(), self.armed()
+            self._publish(
+                {lay: render.render_lights(plugs, self.now(), self.s.zone, lay, kindle, confirm) for lay in render.LAYOUTS}, "lights"
+            )
 
     async def poll_lights(self) -> None:
         await self.plugs.refresh()
@@ -282,10 +296,17 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
             return Response(status_code=204)
         lines = ["flash %d %d %d %d" % touch.box_to_panel(target.flash, rotate, size)]
         kind, _, arg = target.action.partition(":")
+        armed, state.confirm = state.armed(), None  # any tap ends a pending prompt
         if kind == "page":
             lines.append(f"page {arg}" if arg != page else "redraw")
+            if armed:
+                await asyncio.to_thread(state.render_lights)  # don't come back to a stale prompt
         elif kind == "plug":
-            await state.plugs.toggle(arg)
+            if state.needs_confirm(arg) and armed != arg:
+                state.confirm = (arg, time.monotonic() + CONFIRM_S)
+                log.info("plug %s needs a second tap within %d s", arg, CONFIRM_S)
+            else:
+                await state.plugs.toggle(arg)
             await asyncio.to_thread(state.render_lights)
             lines.append("redraw")
         return "\n".join(lines) + "\n"

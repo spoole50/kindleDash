@@ -32,6 +32,8 @@ class Settings:
     kasa_hosts: tuple[str, ...] = ()
     kasa_kinds: tuple[tuple[str, str], ...] = ()
     lights_refresh_seconds: int = 15
+    # plugs of these kinds need a second tap on the Kindle to switch
+    confirm_kinds: tuple[str, ...] = ("ev charger",)
     # Raw touch coordinates -> panel pixels (portrait 1236 x 1648). The defaults
     # assume the touch panel already reports panel pixels.
     touch_swap_xy: bool = False
@@ -63,6 +65,7 @@ class Settings:
             admin_password=env("ADMIN_PASSWORD", ""),
             kasa_hosts=tuple(h for h, _ in _plugs(env("KASA_HOSTS", ""))),
             kasa_kinds=tuple((h, k) for h, k in _plugs(env("KASA_HOSTS", "")) if k),
+            confirm_kinds=tuple(k.lower() for k in _list(env("CONFIRM_KINDS", ",".join(cls.confirm_kinds)))),
             lights_refresh_seconds=max(5, int(env("LIGHTS_REFRESH_SECONDS", cls.lights_refresh_seconds))),
             touch_swap_xy=_flag(env("TOUCH_SWAP_XY", "")),
             touch_flip_x=_flag(env("TOUCH_FLIP_X", "")),

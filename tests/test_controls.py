@@ -1,4 +1,5 @@
 import asyncio
+import time
 import base64
 from datetime import datetime, timezone
 from io import BytesIO
@@ -227,3 +228,58 @@ def test_admin_page_shows_the_kindle_view_and_toggles_plugs():
         r = client.post("/admin/plug?host=10.0.0.1", headers=ADMIN, follow_redirects=False)
         assert r.status_code == 303 and state.plugs.toggled == ["10.0.0.1"]
         assert client.post("/admin/plug?host=8.8.8.8", headers=ADMIN).status_code == 404
+
+
+def test_ev_charger_needs_a_second_tap(monkeypatch):
+    app, state = _app(kasa_kinds=(("10.0.0.2", "EV Charger"),))
+    box = render.plug_boxes("portrait", 2)[1]
+    x, y = _center(box)
+    tap = lambda c: c.post(f"/tap?x={x}&y={y}&page=lights", headers=KINDLE)  # noqa: E731
+    with TestClient(app, headers=KINDLE) as client:
+        plain = client.get("/portrait.png?page=lights").content
+        assert tap(client).text.splitlines()[1] == "redraw"
+        assert state.plugs.toggled == [] and state.armed() == "10.0.0.2"
+        prompt = client.get("/portrait.png?page=lights").content
+        assert prompt != plain
+        tap(client)  # the second tap switches it
+        assert state.plugs.toggled == ["10.0.0.2"] and state.armed() is None
+
+        # a prompt expires...
+        tap(client)
+        now = time.monotonic()
+        monkeypatch.setattr(time, "monotonic", lambda: now + 11)
+        tap(client)  # ...so this only asks again
+        assert state.plugs.toggled == ["10.0.0.2"] and state.armed() == "10.0.0.2"
+
+        # tapping anything else cancels it; the plain Lamp switches at once
+        lx, ly = _center(render.plug_boxes("portrait", 2)[0])
+        client.post(f"/tap?x={lx}&y={ly}&page=lights", headers=KINDLE)
+        assert state.plugs.toggled == ["10.0.0.2", "10.0.0.1"] and state.armed() is None
+
+
+class FakeEnergy:
+    def __init__(self, months):
+        self.months, self.calls = months, 0
+
+    async def get_daily_stats(self, *, year, month, kwh=True):
+        self.calls += 1
+        return self.months.get((year, month), {})
+
+
+def test_last_30_days_spans_the_month_boundary(monkeypatch):
+    import kindle_dash.plugs as plugs_mod
+
+    class Today(plugs_mod.date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 10, 2)
+
+    monkeypatch.setattr(plugs_mod, "date", Today)
+    # Sept 2..30 (29 days) + Oct 1 count; Sept 1 and today (Oct 2) don't
+    energy = FakeEnergy({(2026, 9): {d: 1.0 for d in range(1, 31)}, (2026, 10): {1: 0.5, 2: 9.0}})
+    dev = type("Dev", (), {"modules": {"Energy": energy}})()
+    plugs = KasaPlugs(("h",))
+    assert asyncio.run(plugs._last30("h", dev)) == 29.5
+    assert asyncio.run(plugs._last30("h", dev)) == 29.5 and energy.calls == 2  # cached
+    nomon = type("Dev", (), {"modules": {}})()
+    assert asyncio.run(KasaPlugs(("h",))._last30("h", nomon)) is None
