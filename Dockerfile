@@ -1,4 +1,11 @@
 # syntax=docker/dockerfile:1
+# Some dependencies (miniaudio, via pyatv) have no arm64 wheel: build wheels
+# here with a compiler, and keep the compiler out of the final image.
+FROM --platform=linux/arm64 python:3.11-slim-bookworm AS wheels
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt .
+RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
+
 FROM --platform=linux/arm64 python:3.11-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -9,8 +16,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install -r requirements.txt \
- && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin dash
+# /data holds the Apple TV pairing; a new volume copies this ownership
+RUN --mount=type=bind,from=wheels,source=/wheels,target=/wheels \
+    pip install --no-index --find-links /wheels -r requirements.txt \
+ && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin dash \
+ && mkdir /data && chown dash /data && chmod 700 /data
 
 COPY kindle_dash ./kindle_dash
 

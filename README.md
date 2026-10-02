@@ -16,6 +16,10 @@ Power tab (`/portrait.png?page=lights`):
 
 ![lights](docs/sample-lights.png)
 
+TV tab (`/portrait.png?page=tv`):
+
+![tv](docs/sample-tv.png)
+
 *(Screenshots use synthetic data: `python -m kindle_dash.sample docs/sample.png America/Los_Angeles`.)*
 
 ## What's on it
@@ -49,6 +53,26 @@ re-reads the plugs every `LIGHTS_REFRESH_SECONDS`. The Kindle picks up changes m
 
 The plugs are addressed by IP because broadcast discovery doesn't reach them from
 the Pi, so give them DHCP reservations.
+
+### TV page
+
+The **TV** tab is a remote for the Apple TV at `ATV_HOST`, using pyatv over the LAN:
+
+- a now-playing panel: app, title, artist or show, play state, and a progress bar
+- a 3×3 pad: **BACK** ▲ **HOME** / ◀ **OK** ▶ / **VOL −** ▼ **VOL +**
+- skip back, play/pause, skip forward, and **POWER** (solid while the TV is on)
+- up to four app shortcuts from `ATV_APPS` (`Name=bundle.id,...`)
+
+Remote keys only flash the button; the Kindle puts its image back without fetching
+a new one. Play/pause, skips, power and app launches wait 1.5 s for the Apple TV to
+report the change, then redraw the page. The Apple TV pushes now-playing changes,
+and the Kindle shows them at its next poll.
+
+**Pairing:** open `/admin` and, under Apple TV, press **Pair** for *Remote control*.
+The TV shows a PIN; type it in. Then do the same for *Now playing* (AirPlay). The
+credentials are saved in the container's `data` volume (`/data/appletv.json`, mode
+600), so they survive rebuilds. Once paired, `/admin` lists the installed apps with
+their bundle IDs, ready to copy into `ATV_APPS`.
 
 Design rules for e-ink: every gray is a multiple of `0x11` (the panel's 16 levels),
 nothing relies on colour, type is large and bold, and there's an "Updated HH:MM" stamp.
@@ -89,7 +113,7 @@ token or password. Don't forward the port.
 
 `/admin` shows what the Kindle is showing (page, orientation, last fetch, battery) with a
 preview of that image, links to preview any page in either layout, the solar data
-status, a **Rotate Kindle 90°** button and a button per plug.
+status, a **Rotate Kindle 90°** button, a button per plug, and Apple TV pairing.
 
 ### Environment variables
 
@@ -108,6 +132,9 @@ status, a **Rotate Kindle 90°** button and a button per plug.
 | `ADMIN_PASSWORD` | – | **required** for `/admin` and `/status` (user `admin`) |
 | `KASA_HOSTS` | – | comma-separated plug IPs for the lights page, in display order, each optionally `=kind` for the label on its tile, e.g. `192.168.113.14=light,192.168.113.36=ev charger` |
 | `LIGHTS_REFRESH_SECONDS` | `15` | how often plug states are re-read |
+| `ATV_HOST` | – | Apple TV IP for the TV page (give it a DHCP reservation) |
+| `ATV_APPS` | – | up to 4 app shortcuts, `Name=bundle.id,...`; `/admin` lists the installed ones |
+| `ATV_CREDENTIALS` | `/data/appletv.json` | where pairing is saved (the `data` volume) |
 | `CONFIRM_KINDS` | `ev charger` | comma-separated plug kinds that need a second tap on the Kindle; empty = none |
 | `TOUCH_SWAP_XY` / `TOUCH_FLIP_X` / `TOUCH_FLIP_Y` / `TOUCH_MAX_X` / `TOUCH_MAX_Y` | off / off / off / `1235` / `1647` | maps raw touch coordinates to panel pixels; the defaults assume they already match (see [Taps](#taps)) |
 
@@ -118,10 +145,10 @@ status, a **Rotate Kindle 90°** button and a button per plug.
 | `GET /portrait.png[?rotate=0\|90\|180\|270]` | Latest 1236×1648 portrait render, served from memory. Sends an `ETag` and supports `If-None-Match` (returns 304). `/dashboard.png` is an alias. |
 | `GET /landscape.png[?rotate=…]` | 1648×1236 landscape layout. The Kindle panel is physically portrait, so the client requests it with `rotate=90` or `270`. |
 | `…&battery=<0-100>&charging=<0\|1>` | Optional on either image. The Kindle client sends its own battery this way, and the next render shows "Kindle [battery icon] 85%" in the header, next to the date. Low battery (under 20% and not charging) is drawn bold black. The indicator disappears if no report has arrived for 15 minutes. Malformed values are ignored. |
-| `…&page=solar\|lights` | Which tab to show, on either image (default `solar`). |
+| `…&page=solar\|lights\|tv` | Which tab to show, on either image (default `solar`). |
 | `POST /tap?x=&y=&rotate=&page=` | A tap at raw touch coordinates on the page the Kindle shows. Needs the token. Replies `204` if nothing was hit, otherwise lines: `flash <left> <top> <width> <height>` (panel pixels), `page <name>`, `redraw`. |
 | `GET /rotate/count` | Polled by the Kindle; it rotates once each time the counter goes up (the **Rotate** button on `/admin`). |
-| `GET /admin` | Admin page for a browser (see [Admin page](#admin-page)). `/admin/image.png?page=&layout=` serves a page upright, and `POST /admin/rotate` and `POST /admin/plug?host=` are its buttons. |
+| `GET /admin` | Admin page for a browser (see [Admin page](#admin-page)). `/admin/image.png?page=&layout=` serves a page upright, and `POST /admin/rotate`, `POST /admin/plug?host=` and `POST /admin/tv/pair?protocol=companion\|airplay` / `/admin/tv/pin` / `/admin/tv/cancel` are its buttons. |
 | `GET /status` | Admin login. Current values as JSON, plus `last_success`, `stale_since` and `last_error` |
 | `GET /health` | 200 if the last successful render is under 3 minutes old, otherwise 503. The Docker `HEALTHCHECK` uses it. |
 

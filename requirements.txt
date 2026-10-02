@@ -5,3 +5,4 @@ matplotlib==3.11.2
 influxdb-client==1.50.0
 tzdata
 python-kasa==0.10.2
+pyatv==0.18.0

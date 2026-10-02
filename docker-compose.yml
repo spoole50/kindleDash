@@ -21,8 +21,13 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    volumes:
+      - data:/data  # Apple TV pairing credentials
     networks:
       - docker_default
+
+volumes:
+  data:
 
 networks:
   docker_default:

@@ -314,7 +314,7 @@ class _Ctx:
 
 
 # Pages, in tab order: (name used in URLs and taps, tab label)
-PAGES = (("solar", "SOLAR"), ("lights", "POWER"))  # "lights" stays the URL name; Kindles remember it
+PAGES = (("solar", "SOLAR"), ("lights", "POWER"), ("tv", "TV"))  # "lights" stays the URL name; Kindles remember it
 HEADER_RULE_Y = 126  # the rule under the header; tabs sit above it
 TAB_SIZE, TAB_PAD, TAB_GAP = 44, 28, 16
 
@@ -577,11 +577,13 @@ def plug_boxes(layout: str, n: int) -> list[tuple[int, int, int, int]]:
     ]
 
 
-def targets(page: str, layout: str, plugs: list[Plug]) -> list[Target]:
-    """Everything tappable on a page: the tabs, plus a tile per plug on the lights page."""
+def targets(page: str, layout: str, plugs: list[Plug], tv_apps: tuple[tuple[str, str], ...] = ()) -> list[Target]:
+    """Everything tappable on a page: the tabs, plus a tile per plug or the TV remote's buttons."""
     out = tab_targets()
     if page == "lights":
         out += [Target(box, box, f"plug:{p.host}") for box, p in zip(plug_boxes(layout, len(plugs)), plugs)]
+    elif page == "tv":
+        out += [Target(box, box, f"atv:{action}") for box, action, _ in tv_buttons(layout, tv_apps)]
     return out
 
 
@@ -677,6 +679,145 @@ def render_lights(
     return quantize(img)
 
 
+# --------------------------------------------------------------------------- TV page
+
+TV_PAD = (("menu", "BACK"), ("up", ""), ("home", "HOME"), ("left", ""), ("select", "OK"), ("right", ""),
+          ("volume_down", "VOL \u2212"), ("down", ""), ("volume_up", "VOL +"))  # fmt: skip
+TV_TRANSPORT = (("skip_backward", ""), ("play_pause", ""), ("skip_forward", ""), ("power", "POWER"))
+MAX_TV_APPS = 4
+
+
+def _grid(box, cols: int, rows: int, n: int | None = None) -> list[tuple[int, int, int, int]]:
+    x0, y0, x1, y1 = box
+    cw, ch = (x1 - x0 - (cols - 1) * GAP) // cols, (y1 - y0 - (rows - 1) * GAP) // rows
+    cells = [(x0 + c * (cw + GAP), y0 + r * (ch + GAP), x0 + c * (cw + GAP) + cw, y0 + r * (ch + GAP) + ch) for r in range(rows) for c in range(cols)]
+    return cells[: len(cells) if n is None else n]
+
+
+def _tv_regions(layout: str) -> dict[str, tuple[int, int, int, int]]:
+    """Now playing, the 3x3 pad, transport and app rows."""
+    top = HEADER_RULE_Y + 4 + GAP
+    if layout == "landscape":
+        w, h = size(layout)
+        rx = M + 840
+        return {
+            "playing": (rx, top, w - M, top + 250),
+            "pad": (M, top, rx - GAP, h - 50),
+            "transport": (rx, top + 270, w - M, top + 270 + 320),
+            "apps": (rx, top + 610, w - M, h - 50),
+        }
+    w = W
+    return {
+        "playing": (M, top, w - M, top + 230),
+        "pad": (M, top + 250, w - M, top + 250 + 700),
+        "transport": (M, top + 970, w - M, top + 970 + 180),
+        "apps": (M, top + 1170, w - M, top + 1170 + 180),
+    }
+
+
+def tv_buttons(layout: str, apps: tuple[tuple[str, str], ...] = ()) -> list[tuple[tuple[int, int, int, int], str, str]]:
+    """(box, action, label) for every remote button; actions are AppleTV.command() names."""
+    r = _tv_regions(layout)
+    out = [(b, a, lab) for b, (a, lab) in zip(_grid(r["pad"], 3, 3), TV_PAD)]
+    cols, rows = (2, 2) if layout == "landscape" else (4, 1)
+    out += [(b, a, lab) for b, (a, lab) in zip(_grid(r["transport"], cols, rows), TV_TRANSPORT)]
+    shown = apps[:MAX_TV_APPS]
+    out += [(b, f"app:{bundle}", name) for b, (name, bundle) in zip(_grid(r["apps"], cols, rows, len(shown)), shown)]
+    return out
+
+
+def _tri(d, cx, cy, s, direction, fill):
+    """A solid triangle of size `s` pointing up/down/left/right."""
+    pts = {
+        "up": [(cx, cy - s), (cx - s, cy + s * 0.7), (cx + s, cy + s * 0.7)],
+        "down": [(cx, cy + s), (cx - s, cy - s * 0.7), (cx + s, cy - s * 0.7)],
+        "left": [(cx - s, cy), (cx + s * 0.7, cy - s), (cx + s * 0.7, cy + s)],
+        "right": [(cx + s, cy), (cx - s * 0.7, cy - s), (cx - s * 0.7, cy + s)],
+    }[direction]
+    d.polygon(pts, fill=fill)
+
+
+def _tv_icon(d, action: str, cx: float, cy: float, fill) -> bool:
+    """Draw the icon for `action` centred at (cx, cy); False if it has none (use the label)."""
+    if action in ("up", "down", "left", "right"):
+        _tri(d, cx, cy, 44, action, fill)
+    elif action == "play_pause":
+        _tri(d, cx - 30, cy, 30, "right", fill)
+        d.rectangle((cx + 12, cy - 30, cx + 24, cy + 30), fill=fill)
+        d.rectangle((cx + 34, cy - 30, cx + 46, cy + 30), fill=fill)
+    elif action in ("skip_backward", "skip_forward"):
+        way = "left" if action == "skip_backward" else "right"
+        _tri(d, cx - 22, cy, 28, way, fill)
+        _tri(d, cx + 22, cy, 28, way, fill)
+    else:
+        return False
+    return True
+
+
+def _tv_playing(d, box, playing, status: str | None) -> None:
+    x0, y0, x1, y1 = box
+    d.rounded_rectangle(box, radius=14, outline=BLACK, width=3)
+    if status:  # not paired / not connected
+        _text(d, ((x0 + x1) / 2, (y0 + y1) / 2), _fit(d, status, 34, x1 - x0 - 56), 34, bold=True, fill=DARK, anchor="mm")
+        return
+    if playing is None or not (playing.title or playing.app):
+        _text(d, (x0 + 28, y0 + 24), "NOW PLAYING", 24, bold=True, fill=DARK)
+        _text(d, (x0 + 28, y0 + 70), "Nothing playing", 44, bold=True, fill=MID)
+        return
+    _text(d, (x0 + 28, y0 + 24), _fit(d, (playing.app or "Now playing").upper(), 24, (x1 - x0) / 2), 24, bold=True, fill=DARK)
+    if playing.state:
+        _text(d, (x1 - 28, y0 + 24), playing.state.upper(), 24, bold=True, anchor="ra")
+    _text(d, (x0 + 28, y0 + 64), _fit(d, playing.title or "\u2014", 44, x1 - x0 - 56), 44, bold=True)
+    if playing.subtitle:
+        _text(d, (x0 + 28, y0 + 120), _fit(d, playing.subtitle, 30, x1 - x0 - 56), 30, fill=DARK)
+    if playing.total:
+        bx0, by0, bx1, by1 = x0 + 28, y1 - 46, x1 - 210, y1 - 26
+        d.rectangle((bx0, by0, bx1, by1), outline=BLACK, width=2)
+        frac = max(0.0, min(1.0, (playing.position or 0) / playing.total))
+        if frac:
+            d.rectangle((bx0 + 3, by0 + 3, bx0 + 3 + (bx1 - bx0 - 6) * frac, by1 - 3), fill=INK)
+        clock = lambda s: f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"  # noqa: E731
+        _text(d, (x1 - 28, y1 - 24), f"{clock(playing.position or 0)} / {clock(playing.total)}", 24, fill=DARK, anchor="rs")
+
+
+def render_tv(
+    playing,
+    status: str | None,
+    power_on: bool | None,
+    apps: tuple[tuple[str, str], ...],
+    now: datetime,
+    tz,
+    layout: str = "portrait",
+    kindle: KindleBattery | None = None,
+) -> Image.Image:
+    """The remote: now playing, a 3x3 pad, transport + power, and app shortcuts.
+
+    `status` replaces now playing with a message (not paired, not connected).
+    """
+    img = Image.new("L", size(layout), WHITE)
+    w, h = img.size
+    header(img, "tv", now.astimezone(tz), kindle)
+    d = ImageDraw.Draw(img)
+    _tv_playing(d, _tv_regions(layout)["playing"], playing, status)
+    for box, action, label in tv_buttons(layout, apps):
+        x0, y0, x1, y1 = box
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        lit = action == "power" and power_on  # the power key is solid while the TV is on
+        d.rounded_rectangle(box, radius=16, fill=BLACK if lit else WHITE, outline=BLACK, width=4)
+        fg = WHITE if lit else BLACK
+        if action == "power":
+            _text(d, (cx, cy - 16), "POWER", 36, bold=True, fill=fg, anchor="mm")
+            state = "unknown" if power_on is None else ("on" if power_on else "off")
+            _text(d, (cx, cy + 26), state, 26, fill=LIGHT if lit else DARK, anchor="mm")
+        elif not _tv_icon(d, action, cx, cy, fg):
+            _text(d, (cx, cy), _fit(d, label, 40, x1 - x0 - 24), 40, bold=True, fill=fg, anchor="mm")
+    if not apps:
+        x0, y0, x1, y1 = _tv_regions(layout)["apps"]
+        _text(d, ((x0 + x1) / 2, (y0 + y1) / 2), "Add app shortcuts with ATV_APPS", 26, fill=MID, anchor="mm")
+    _text(d, (w - M, h - 16), "Apple TV", 22, fill=DARK, anchor="rs")
+    return quantize(img)
+
+
 def _hatch_swatch(img: Image.Image, box):
     """Legend swatch matching the chart's /// hatch."""
     x0, y0, x1, y1 = (int(v) for v in box)
@@ -694,12 +835,13 @@ def stale_badge(img: Image.Image, since: datetime, tz) -> Image.Image:
     out = img.copy()
     d = ImageDraw.Draw(out)
     text = f"STALE since {since.astimezone(tz):%H:%M}"
-    f = font(28, True)
+    f = font(30, True)
     tw = d.textlength(text, font=f)
-    cx, cy = TABS_RIGHT + 24 + 16 + tw / 2, 72  # just right of the tabs
-    box = (cx - tw / 2 - 16, cy - 28, cx + tw / 2 + 16, cy + 28)
+    # over "Updated HH:MM", which it replaces; the date line below stays
+    box = (out.width - M - tw - 32, 24, out.width - M, 80)
+    d.rectangle((box[0] - 8, 20, out.width - M, 82), fill=WHITE)
     d.rounded_rectangle(box, radius=12, fill=BLACK)
-    d.text((cx, cy), text, font=f, fill=WHITE, anchor="mm")
+    d.text(((box[0] + box[2]) / 2, (box[1] + box[3]) / 2), text, font=f, fill=WHITE, anchor="mm")
     return quantize(out)
 
 

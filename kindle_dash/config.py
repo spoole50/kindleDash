@@ -34,6 +34,10 @@ class Settings:
     lights_refresh_seconds: int = 15
     # plugs of these kinds need a second tap on the Kindle to switch
     confirm_kinds: tuple[str, ...] = ("ev charger",)
+    # Apple TV: its IP, app shortcuts ("Name=bundle.id", up to 4), and where pairing is saved
+    atv_host: str = ""
+    atv_apps: tuple[tuple[str, str], ...] = ()
+    atv_credentials: str = "/data/appletv.json"
     # Raw touch coordinates -> panel pixels (portrait 1236 x 1648). The defaults
     # assume the touch panel already reports panel pixels.
     touch_swap_xy: bool = False
@@ -67,6 +71,9 @@ class Settings:
             kasa_kinds=tuple((h, k) for h, k in _plugs(env("KASA_HOSTS", "")) if k),
             confirm_kinds=tuple(k.lower() for k in _list(env("CONFIRM_KINDS", ",".join(cls.confirm_kinds)))),
             lights_refresh_seconds=max(5, int(env("LIGHTS_REFRESH_SECONDS", cls.lights_refresh_seconds))),
+            atv_host=env("ATV_HOST", ""),
+            atv_apps=tuple((n, b) for n, b in _plugs(env("ATV_APPS", "")) if b),
+            atv_credentials=env("ATV_CREDENTIALS", cls.atv_credentials),
             touch_swap_xy=_flag(env("TOUCH_SWAP_XY", "")),
             touch_flip_x=_flag(env("TOUCH_FLIP_X", "")),
             touch_flip_y=_flag(env("TOUCH_FLIP_Y", "")),

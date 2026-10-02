@@ -12,6 +12,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from urllib.parse import parse_qs
 from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
@@ -21,6 +22,8 @@ from PIL import Image
 from . import render, touch
 from .config import Settings
 from .data import Snapshot
+from .appletv import PROTOCOLS as TV_PROTOCOLS
+from .appletv import AppleTV
 from .plugs import KasaPlugs
 
 log = logging.getLogger("kindle_dash")
@@ -28,6 +31,8 @@ log = logging.getLogger("kindle_dash")
 KINDLE_REPORT_MAX_AGE_S = 15 * 60  # hide the Kindle's battery after this long without a report
 PAGE_NAMES = tuple(name for name, _ in render.PAGES)
 CONFIRM_S = 10  # how long a "tap again" prompt waits for the second tap
+TV_REDRAW = ("play_pause", "skip_forward", "skip_backward", "power")  # change what's playing: redraw after
+TV_SETTLE_S = 1.5  # let the Apple TV report the change before redrawing
 
 
 class State:
@@ -38,6 +43,7 @@ class State:
         self.lock = threading.Lock()
         self.render_lock = threading.Lock()  # one render at a time: poll cycle or battery change
         self.lights_lock = threading.Lock()  # lights renders are quick; don't queue them behind the solar one
+        self.tv_lock = threading.Lock()
         self.snapshot: Snapshot | None = None
         # solar, per layout: last render from fresh data
         self.good_images: dict[str, Image.Image] = {}
@@ -50,6 +56,7 @@ class State:
         self.plugs = KasaPlugs(settings.kasa_hosts, dict(settings.kasa_kinds))
         self.confirm: tuple[str, float] | None = None  # (plug host, monotonic deadline) awaiting a second tap
         self.lights_polled = False
+        self.tv = AppleTV(settings.atv_host, settings.atv_credentials, self._tv_changed) if settings.atv_host else None
         self.last_render: datetime | None = None
         self.last_success: datetime | None = None
         self.stale_since: datetime | None = None
@@ -62,6 +69,7 @@ class State:
         self.kindle_at: datetime | None = None
         # (page, layout, rotate, when) of the Kindle's last image fetch, for /admin
         self.kindle_view: tuple[str, str, int, datetime] | None = None
+        self.render_tv()
 
     @staticmethod
     def now() -> datetime:
@@ -105,6 +113,7 @@ class State:
     def rerender(self) -> None:
         """Redraw the current data, e.g. so a new battery report shows in the image the Kindle is fetching."""
         self.render_lights()
+        self.render_tv()
         with self.render_lock:
             if self.snapshot is None or self.stale_since is not None:
                 return  # nothing fresh to redraw; the next good poll picks the report up
@@ -119,6 +128,37 @@ class State:
 
     def needs_confirm(self, host: str) -> bool:
         return dict(self.s.kasa_kinds).get(host, "").lower() in self.s.confirm_kinds
+
+    def tv_status(self) -> str | None:
+        """Why the TV page can't show what's playing, or None when it can."""
+        tv = self.tv
+        if tv is None:
+            return "No Apple TV configured (ATV_HOST)"
+        if tv.pairing:
+            return "Pairing: enter the PIN from the TV at /admin"
+        if not tv.paired():
+            return "Pair the Apple TV at /admin"
+        if not tv.connected:
+            return f"Apple TV not connected: {tv.error}" if tv.error else "Connecting to the Apple TV\u2026"
+        if not tv.paired("airplay"):
+            return "Connected. Pair \u201cnow playing\u201d at /admin"
+        return None
+
+    def render_tv(self) -> None:
+        with self.tv_lock:
+            tv, kindle, status = self.tv, self.kindle_battery(), self.tv_status()
+            playing, power = (tv.playing, tv.power_on) if tv else (None, None)
+            self._publish(
+                {lay: render.render_tv(playing, status, power, self.s.atv_apps, self.now(), self.s.zone, lay, kindle) for lay in render.LAYOUTS},
+                "tv",
+            )
+
+    def _tv_changed(self) -> None:
+        """AppleTV's callback, in the event loop: redraw off it."""
+        try:
+            asyncio.get_running_loop().run_in_executor(None, self.render_tv)
+        except RuntimeError:  # no loop (tests): draw now
+            self.render_tv()
 
     def render_lights(self) -> None:
         """Redraw the lights page from the last plug states (once they've been read)."""
@@ -206,10 +246,14 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
             source = InfluxSource(settings)
             fetch = source.fetch
         tasks = [asyncio.create_task(_poll(state, fetch)), asyncio.create_task(_poll_lights(state))] if poll else []
+        if poll and state.tv:
+            tasks.append(asyncio.create_task(state.tv.run()))
         yield
         for task in tasks:
             task.cancel()
         await state.plugs.close()
+        if state.tv:
+            await state.tv.close()
         if source:
             source.close()
 
@@ -290,7 +334,7 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
         size = render.size(layout)
         px, py = touch.raw_to_panel(x, y, settings)
         ix, iy = touch.panel_to_image(px, py, rotate, size)
-        target = touch.hit(render.targets(page, layout, state.plugs.plugs), ix, iy)
+        target = touch.hit(render.targets(page, layout, state.plugs.plugs, settings.atv_apps), ix, iy)
         log.info("tap raw=%d,%d panel=%d,%d %s/%s image=%d,%d -> %s", x, y, px, py, page, layout, ix, iy, target.action if target else "-")
         if target is None:
             return Response(status_code=204)
@@ -309,6 +353,15 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
                 await state.plugs.toggle(arg)
             await asyncio.to_thread(state.render_lights)
             lines.append("redraw")
+        elif kind == "atv":
+            # remote keys just flash (the Kindle puts its image back); ones that
+            # change what's playing, and failures, redraw the page
+            ok = await state.tv.command(arg) if state.tv else False
+            if not ok or arg in TV_REDRAW or arg.startswith("app:"):
+                if ok:
+                    await asyncio.sleep(TV_SETTLE_S)
+                await asyncio.to_thread(state.render_tv)
+                lines.append("redraw")
         return "\n".join(lines) + "\n"
 
     @app.get("/rotate/count", response_class=PlainTextResponse, dependencies=[Kindle])
@@ -346,6 +399,47 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
         await asyncio.to_thread(state.render_lights)
         return RedirectResponse("/admin?done=plug", status_code=303)
 
+    def tv_or_404() -> AppleTV:
+        if state.tv is None:
+            raise HTTPException(404, "no Apple TV configured (ATV_HOST)")
+        return state.tv
+
+    @app.post("/admin/tv/pair", dependencies=[Admin])
+    async def admin_tv_pair(protocol: str = Query(...)):
+        """Start pairing; the TV shows a PIN to enter on /admin."""
+        tv = tv_or_404()
+        if protocol not in TV_PROTOCOLS:
+            raise HTTPException(400, f"protocol must be one of {', '.join(TV_PROTOCOLS)}")
+        try:
+            await tv.pair_begin(protocol)
+        except Exception as exc:
+            tv.error = f"pairing failed to start: {type(exc).__name__}: {exc}"
+            log.warning("%s", tv.error)
+            return RedirectResponse("/admin?done=tv-error#tv", status_code=303)
+        await asyncio.to_thread(state.render_tv)
+        return RedirectResponse("/admin#tv", status_code=303)
+
+    @app.post("/admin/tv/pin", dependencies=[Admin])
+    async def admin_tv_pin(request: Request):
+        tv = tv_or_404()
+        form = parse_qs((await request.body()).decode(errors="replace"))
+        pin = "".join(ch for ch in form.get("pin", [""])[0] if ch.isdigit())
+        try:
+            ok = await tv.pair_pin(pin)
+        except Exception as exc:
+            tv.error, ok = f"pairing failed: {type(exc).__name__}: {exc}", False
+        if ok:
+            asyncio.create_task(_connect_quietly(tv))
+        return RedirectResponse(f"/admin?done={'tv-paired' if ok else 'tv-error'}#tv", status_code=303)
+
+    @app.post("/admin/tv/cancel", dependencies=[Admin])
+    async def admin_tv_cancel():
+        tv = tv_or_404()
+        await tv.pair_cancel()
+        asyncio.create_task(_connect_quietly(tv))
+        await asyncio.to_thread(state.render_tv)
+        return RedirectResponse("/admin#tv", status_code=303)
+
     @app.get("/status", dependencies=[Admin])
     def status():
         iso = lambda t: t.isoformat() if t else None  # noqa: E731
@@ -359,6 +453,15 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
             "kindle": {**state.kindle._asdict(), "reported_at": iso(state.kindle_at)} if state.kindle else None,
             "kindle_view": {"page": view[0], "layout": view[1], "rotate": view[2], "at": iso(view[3])} if view else None,
             "plugs": [asdict(p) for p in state.plugs.plugs] if state.lights_polled else None,
+            "tv": {
+                "connected": state.tv.connected,
+                "paired": [p for p in TV_PROTOCOLS if state.tv.paired(p)],
+                "power_on": state.tv.power_on,
+                "playing": asdict(state.tv.playing) if state.tv.playing else None,
+                "error": state.tv.error,
+            }
+            if state.tv
+            else None,
         }
 
     @app.get("/health")
@@ -369,6 +472,14 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
         return JSONResponse({"ok": ok, "render_age_s": age}, status_code=200 if ok else 503)
 
     return app
+
+
+async def _connect_quietly(tv: AppleTV) -> None:
+    try:
+        await tv.connect()
+    except Exception as exc:
+        tv.error = f"{type(exc).__name__}: {exc}"
+        tv.on_change()
 
 
 def _same(a: str, b: str) -> bool:
@@ -385,6 +496,45 @@ def _basic_auth(header: str) -> tuple[str, str]:
     except (ValueError, UnicodeDecodeError):
         return "", ""
     return user, password
+
+
+TV_PROTOCOL_NAMES = {"companion": "Remote control (buttons, apps, power)", "airplay": "Now playing"}
+
+
+def _admin_tv(tv: AppleTV | None) -> str:
+    """The Apple TV section: connection, pairing (with the PIN form while one runs), installed apps."""
+    e = html.escape
+    if tv is None:
+        return "<p>Not configured: set <code>ATV_HOST</code> in <code>.env</code>.</p>"
+    if tv.connected:
+        power = {True: "on", False: "off"}.get(tv.power_on, "unknown")
+        status = f"Connected to {e(tv.host)} &middot; TV power {power}"
+    else:
+        status = f"Not connected ({e(tv.host)})" + (f": {e(tv.error)}" if tv.error else "")
+    out = [f"<p>{status}</p>"]
+    if tv.pairing:
+        out.append(
+            f"<p>Pairing <b>{e(TV_PROTOCOL_NAMES[tv.pairing[0]])}</b>: enter the PIN shown on the TV.</p>"
+            '<form method="post" action="/admin/tv/pin" class="row"><input name="pin" inputmode="numeric" autocomplete="one-time-code" '
+            'pattern="[0-9]*" required autofocus placeholder="PIN"><button>Pair</button></form>'
+            '<form method="post" action="/admin/tv/cancel"><button class="quiet">Cancel</button></form>'
+        )
+    else:
+        for proto in TV_PROTOCOL_NAMES:
+            done = tv.paired(proto)
+            out.append(
+                f'<form method="post" action="/admin/tv/pair?protocol={proto}" class="row"><span>{e(TV_PROTOCOL_NAMES[proto])}: '
+                f'<b>{"paired" if done else "not paired"}</b></span><button{" class=quiet" if done else ""}>'
+                f'{"Pair again" if done else "Pair"}</button></form>'
+            )
+    if tv.installed_apps:
+        rows = "".join(f"<li>{e(name)} <code>{e(bundle)}</code></li>" for name, bundle in tv.installed_apps)
+        out.append(
+            "<details><summary>Installed apps</summary><p class=muted>For the TV page's shortcuts, set "
+            "<code>ATV_APPS=Name=bundle.id,…</code> (up to 4) in <code>.env</code>.</p>"
+            f"<ul>{rows}</ul></details>"
+        )
+    return "\n".join(out)
 
 
 def _ago(t: datetime | None, now: datetime) -> str:
@@ -417,8 +567,14 @@ def admin_html(state: State, done: str) -> str:
         f'{" disabled" if p.on is None else ""}><b>{e(p.name)}</b> <span>{"offline" if p.on is None else ("ON" if p.on else "OFF")}{f" &middot; {render.fmt_watts(p.power_w)}" if p.on is not None and p.power_w is not None else ""}</span></button></form>'
         for p in state.plugs.plugs
     ) or "<p>No plugs configured (KASA_HOSTS).</p>"
-    note = {"rotate": "Rotate requested. The Kindle turns at its next check (within a minute).", "plug": "Plug toggled."}.get(done, "")
+    note = {
+        "rotate": "Rotate requested. The Kindle turns at its next check (within a minute).",
+        "plug": "Plug toggled.",
+        "tv-paired": "Paired. Connecting to the Apple TV\u2026",
+        "tv-error": f"Apple TV: {e(state.tv.error or 'pairing failed') if state.tv else ''}",
+    }.get(done, "")
     return ADMIN_PAGE.format(
+        tv=_admin_tv(state.tv),
         kindle=kindle,
         data=data,
         updated=_ago(state.last_success, now),
@@ -443,6 +599,9 @@ button{{font:inherit;padding:.7rem 1.2rem;border-radius:.5rem;border:2px solid v
 .plugs{{display:grid;grid-template-columns:repeat(auto-fill,minmax(11rem,1fr));gap:.6rem}}
 .plugs form{{margin:0}} .plug{{width:100%;display:flex;justify-content:space-between;gap:.5rem}}
 .plug.on{{background:var(--on);color:var(--on-fg)}} .plug:disabled{{opacity:.45;cursor:default}}
+.row{{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin:.4rem 0}}
+input{{font:inherit;padding:.6rem;border-radius:.5rem;border:2px solid var(--fg);background:var(--bg);color:var(--fg);width:8rem}}
+button.quiet{{border-width:1px;padding:.4rem .9rem}} code{{font-size:.9em}} details{{margin-top:.6rem}}
 .views a{{margin-right:.8rem}} .views a.cur{{font-weight:bold;text-decoration:none}}
 img{{max-width:100%;height:auto;border:1px solid var(--line);margin-top:.6rem;background:#fff}}
 </style></head>
@@ -456,6 +615,8 @@ img{{max-width:100%;height:auto;border:1px solid var(--line);margin-top:.6rem;ba
 <p>{data} <span class="muted">&middot; last update {updated}</span></p>
 <h2>Plugs</h2>
 <div class="plugs">{plugs}</div>
+<h2 id="tv">Apple TV</h2>
+{tv}
 <h2>Screen</h2>
 <p class="views">{previews}</p>
 <img id="shot" src="{img}" alt="The page the Kindle is showing">
