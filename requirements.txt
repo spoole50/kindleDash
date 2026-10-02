@@ -4,3 +4,4 @@ pillow==12.3.0
 matplotlib==3.11.2
 influxdb-client==1.50.0
 tzdata
+python-kasa==0.10.2

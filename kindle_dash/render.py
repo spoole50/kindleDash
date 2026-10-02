@@ -23,6 +23,8 @@ import numpy as np  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 from .data import Point, Snapshot  # noqa: E402
+from .plugs import Plug  # noqa: E402
+from .touch import Target  # noqa: E402
 
 BLACK, INK, DARK, MID, LIGHT, FAINT, WHITE = 0x00, 0x22, 0x55, 0x88, 0xBB, 0xDD, 0xFF
 HEX = {v: f"#{v:02x}{v:02x}{v:02x}" for v in (BLACK, INK, DARK, MID, LIGHT, FAINT, WHITE)}
@@ -311,19 +313,54 @@ class _Ctx:
         self.start = self.end - timedelta(hours=chart_hours)
 
 
-def _header(c: _Ctx) -> int:
-    """Title, timestamp and rule across the top; returns the y below it."""
-    w = c.img.width
+# Pages, in tab order: (name used in URLs and taps, tab label)
+PAGES = (("solar", "SOLAR"), ("lights", "LIGHTS"))
+HEADER_RULE_Y = 126  # the rule under the header; tabs sit above it
+TAB_SIZE, TAB_PAD, TAB_GAP = 44, 28, 16
+
+
+def tab_boxes() -> list[tuple[tuple[int, int, int, int], str]]:
+    """Each tab's drawn box and its tap action ("page:<name>"); the same in both layouts."""
+    out, x = [], M
+    for name, label in PAGES:
+        w = round(font(TAB_SIZE, True).getlength(label)) + 2 * TAB_PAD
+        out.append(((x, 30, x + w, 114), f"page:{name}"))
+        x += w + TAB_GAP
+    return out
+
+
+def tab_targets() -> list[Target]:
+    """Tap areas for the tabs: the full header height, split halfway across the gaps."""
+    return [
+        Target((x0 - (TAB_GAP // 2 if i else M), 0, x1 + TAB_GAP // 2, HEADER_RULE_Y + 4), (x0, y0, x1, y1), action)
+        for i, ((x0, y0, x1, y1), action) in enumerate(tab_boxes())
+    ]
+
+
+TABS_RIGHT = tab_boxes()[-1][0][2]
+
+
+def header(img: Image.Image, page: str, now: datetime, kindle: KindleBattery | None) -> int:
+    """Page tabs, timestamp, date and rule across the top; returns the y below it."""
+    d, w = ImageDraw.Draw(img), img.width
+    for (x0, y0, x1, y1), action in tab_boxes():
+        name = action.split(":", 1)[1]
+        label = dict(PAGES)[name]
+        active = name == page
+        d.rounded_rectangle((x0, y0, x1, y1), radius=14, fill=BLACK if active else WHITE, outline=BLACK, width=3)
+        _text(d, ((x0 + x1) / 2, (y0 + y1) / 2), label, TAB_SIZE, bold=True, fill=WHITE if active else BLACK, anchor="mm")
     y = 26
-    _text(c.d, (M, y + 70), "SOLAR", 64, bold=True, anchor="ls")
-    _text(c.d, (w - M, y + 44), f"Updated {c.now:%H:%M}", 40, bold=True, anchor="rs")
-    date = f"{c.now:%a %-d %b}"
-    _text(c.d, (w - M, y + 80), date, 28, fill=DARK, anchor="rs")
-    if c.kindle:
-        _kindle_battery(c.d, w - M - c.d.textlength(date, font=font(28)) - 28, y + 80, c.kindle)
-    y += 100
-    c.d.rectangle((M, y, w - M, y + 4), fill=BLACK)
-    return y + 4 + GAP
+    _text(d, (w - M, y + 44), f"Updated {now:%H:%M}", 40, bold=True, anchor="rs")
+    date = f"{now:%a %-d %b}"
+    _text(d, (w - M, y + 80), date, 28, fill=DARK, anchor="rs")
+    if kindle:
+        _kindle_battery(d, w - M - d.textlength(date, font=font(28)) - 28, y + 80, kindle)
+    d.rectangle((M, HEADER_RULE_Y, w - M, HEADER_RULE_Y + 4), fill=BLACK)
+    return HEADER_RULE_Y + 4 + GAP
+
+
+def _header(c: _Ctx) -> int:
+    return header(c.img, "solar", c.now, c.kindle)
 
 
 def _kindle_battery(d: ImageDraw.ImageDraw, right: float, baseline: float, kb: KindleBattery) -> None:
@@ -459,6 +496,10 @@ def _daily_section(c: _Ctx, box) -> None:
 LAYOUTS = ("portrait", "landscape")
 
 
+def size(layout: str) -> tuple[int, int]:
+    return (H, W) if layout == "landscape" else (W, H)
+
+
 def render(
     snap: Snapshot, tz, chart_hours: int = 24, spark_hours: int = 6, layout: str = "portrait", kindle: KindleBattery | None = None
 ) -> Image.Image:
@@ -519,6 +560,71 @@ def render_landscape(snap: Snapshot, tz, chart_hours: int = 24, spark_hours: int
     return quantize(c.img)
 
 
+# --------------------------------------------------------------------------- lights page
+
+
+def plug_boxes(layout: str, n: int) -> list[tuple[int, int, int, int]]:
+    """One big tile per plug: 2 columns in portrait, 3 in landscape."""
+    w, h = size(layout)
+    cols = 3 if layout == "landscape" else 2
+    rows = max(1, math.ceil(n / cols))
+    top, bottom = HEADER_RULE_Y + 4 + GAP, h - 50
+    tw = (w - 2 * M - (cols - 1) * GAP) // cols
+    th = min(400, (bottom - top - (rows - 1) * GAP) // rows)
+    return [
+        (M + (i % cols) * (tw + GAP), top + (i // cols) * (th + GAP), M + (i % cols) * (tw + GAP) + tw, top + (i // cols) * (th + GAP) + th)
+        for i in range(n)
+    ]
+
+
+def targets(page: str, layout: str, plugs: list[Plug]) -> list[Target]:
+    """Everything tappable on a page: the tabs, plus a tile per plug on the lights page."""
+    out = tab_targets()
+    if page == "lights":
+        out += [Target(box, box, f"plug:{p.host}") for box, p in zip(plug_boxes(layout, len(plugs)), plugs)]
+    return out
+
+
+def _fit(d: ImageDraw.ImageDraw, s: str, size_: int, width: float) -> str:
+    """`s`, cut with an ellipsis to fit `width` at bold `size_`."""
+    f = font(size_, True)
+    if d.textlength(s, font=f) <= width:
+        return s
+    while s and d.textlength(s + "…", font=f) > width:
+        s = s[:-1]
+    return s.rstrip() + "…"
+
+
+def _plug_tile(d: ImageDraw.ImageDraw, box, plug: Plug) -> None:
+    """ON is solid black, OFF is outlined, unreachable is pale gray."""
+    x0, y0, x1, y1 = box
+    on = plug.on is True
+    if plug.on is None:
+        bg, fg, sub = FAINT, DARK, DARK
+    else:
+        bg, fg, sub = (BLACK, WHITE, LIGHT) if on else (WHITE, BLACK, DARK)
+    d.rounded_rectangle(box, radius=18, fill=bg, outline=BLACK, width=4)
+    _text(d, (x0 + 28, y0 + 28), _fit(d, plug.name, 44, x1 - x0 - 56), 44, bold=True, fill=fg)
+    state = "OFFLINE" if plug.on is None else ("ON" if on else "OFF")
+    _text(d, (x0 + 28, y1 - 34), state, 64 if plug.on is None else 110, bold=True, fill=fg, anchor="ls")
+    if plug.on is not None:
+        _text(d, (x1 - 28, y1 - 38), f"tap to turn {'off' if on else 'on'}", 26, fill=sub, anchor="rs")
+
+
+def render_lights(plugs: list[Plug], now: datetime, tz, layout: str = "portrait", kindle: KindleBattery | None = None) -> Image.Image:
+    img = Image.new("L", size(layout), WHITE)
+    w, h = img.size
+    header(img, "lights", now.astimezone(tz), kindle)
+    d = ImageDraw.Draw(img)
+    if not plugs:
+        _text(d, (w / 2, h / 2), "No plugs configured (KASA_HOSTS)", 40, bold=True, anchor="mm")
+    for box, plug in zip(plug_boxes(layout, len(plugs)), plugs):
+        _plug_tile(d, box, plug)
+    reachable = sum(p.on is not None for p in plugs)
+    _text(d, (w - M, h - 16), f"Kasa plugs  \u00b7  {reachable} of {len(plugs)} reachable", 22, fill=DARK, anchor="rs")
+    return quantize(img)
+
+
 def _hatch_swatch(img: Image.Image, box):
     """Legend swatch matching the chart's /// hatch."""
     x0, y0, x1, y1 = (int(v) for v in box)
@@ -536,22 +642,23 @@ def stale_badge(img: Image.Image, since: datetime, tz) -> Image.Image:
     out = img.copy()
     d = ImageDraw.Draw(out)
     text = f"STALE since {since.astimezone(tz):%H:%M}"
-    f = font(34, True)
+    f = font(28, True)
     tw = d.textlength(text, font=f)
-    cx, cy = out.width // 2 - 40, 26 + 48
-    box = (cx - tw / 2 - 22, cy - 32, cx + tw / 2 + 22, cy + 32)
+    cx, cy = TABS_RIGHT + 24 + 16 + tw / 2, 72  # just right of the tabs
+    box = (cx - tw / 2 - 16, cy - 28, cx + tw / 2 + 16, cy + 28)
     d.rounded_rectangle(box, radius=12, fill=BLACK)
     d.text((cx, cy), text, font=f, fill=WHITE, anchor="mm")
     return quantize(out)
 
 
-def placeholder(message: str, now: datetime, tz, layout: str = "portrait") -> Image.Image:
-    w, h = (H, W) if layout == "landscape" else (W, H)
-    img = Image.new("L", (w, h), WHITE)
+def placeholder(message: str, now: datetime, tz, layout: str = "portrait", page: str = "solar") -> Image.Image:
+    """A message under the usual header, so the tabs still work."""
+    img = Image.new("L", size(layout), WHITE)
+    w, h = img.size
+    header(img, page, now.astimezone(tz), None)
     d = ImageDraw.Draw(img)
-    _text(d, (w / 2, h / 2 - 40), "SOLAR", 96, bold=True, anchor="mm")
-    _text(d, (w / 2, h / 2 + 60), message, 40, anchor="mm")
-    _text(d, (w / 2, h / 2 + 120), f"{now.astimezone(tz):%H:%M}", 32, fill=DARK, anchor="mm")
+    _text(d, (w / 2, h / 2 - 20), message, 44, bold=True, anchor="mm")
+    _text(d, (w / 2, h / 2 + 50), f"{now.astimezone(tz):%H:%M}", 32, fill=DARK, anchor="mm")
     return quantize(img)
 
 

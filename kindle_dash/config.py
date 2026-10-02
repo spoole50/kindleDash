@@ -22,6 +22,21 @@ class Settings:
     stale_after_seconds: int = 180
     width: int = 1236
     height: int = 1648
+    # The Kindle's routes (images, taps) need control_token; refused while it's empty.
+    control_token: str = ""
+    control_allow_ips: tuple[str, ...] = ()  # empty = any LAN client with the token
+    # /admin, for a browser: HTTP Basic auth as "admin". Refused while empty.
+    admin_password: str = ""
+    # Kasa smart plugs, by IP (broadcast discovery doesn't reach them), in display order
+    kasa_hosts: tuple[str, ...] = ()
+    lights_refresh_seconds: int = 15
+    # Raw touch coordinates -> panel pixels (portrait 1236 x 1648). The defaults
+    # assume the touch panel already reports panel pixels.
+    touch_swap_xy: bool = False
+    touch_flip_x: bool = False
+    touch_flip_y: bool = False
+    touch_max_x: int = 1235
+    touch_max_y: int = 1647
 
     @property
     def zone(self) -> ZoneInfo:
@@ -41,4 +56,22 @@ class Settings:
             chart_hours=int(env("CHART_HOURS", cls.chart_hours)),
             spark_hours=int(env("SPARK_HOURS", cls.spark_hours)),
             days=int(env("DAYS", cls.days)),
+            control_token=env("CONTROL_TOKEN", ""),
+            control_allow_ips=_list(env("CONTROL_ALLOW_IPS", "")),
+            admin_password=env("ADMIN_PASSWORD", ""),
+            kasa_hosts=_list(env("KASA_HOSTS", "")),
+            lights_refresh_seconds=max(5, int(env("LIGHTS_REFRESH_SECONDS", cls.lights_refresh_seconds))),
+            touch_swap_xy=_flag(env("TOUCH_SWAP_XY", "")),
+            touch_flip_x=_flag(env("TOUCH_FLIP_X", "")),
+            touch_flip_y=_flag(env("TOUCH_FLIP_Y", "")),
+            touch_max_x=int(env("TOUCH_MAX_X", cls.touch_max_x)),
+            touch_max_y=int(env("TOUCH_MAX_Y", cls.touch_max_y)),
         )
+
+
+def _list(value: str) -> tuple[str, ...]:
+    return tuple(v.strip() for v in value.split(",") if v.strip())
+
+
+def _flag(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes")

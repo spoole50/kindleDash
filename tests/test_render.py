@@ -1,3 +1,4 @@
+import base64
 from datetime import datetime, timezone
 from io import BytesIO
 from zoneinfo import ZoneInfo
@@ -13,6 +14,8 @@ from kindle_dash.data import Snapshot
 from kindle_dash.sample import sample_snapshot
 
 TZ = ZoneInfo("America/Los_Angeles")
+# the Kindle's token and the admin login, for routes that need either
+AUTH = {"X-Kindle-Token": "t", "Authorization": "Basic " + base64.b64encode(b"admin:pw").decode()}
 NOW = datetime(2026, 10, 2, 22, 30, tzinfo=timezone.utc)
 
 
@@ -76,9 +79,9 @@ def test_endpoints_serve_cached_png_and_go_stale():
             raise ConnectionError("influx down")
         return sample_snapshot(datetime.now(timezone.utc), TZ)
 
-    app = create_app(Settings(tz="America/Los_Angeles"), fetch=fetch, poll=False)
+    app = create_app(Settings(tz="America/Los_Angeles", control_token="t", admin_password="pw"), fetch=fetch, poll=False)
     state = app.state.dash
-    with TestClient(app) as client:
+    with TestClient(app, headers=AUTH) as client:
         assert client.get("/health").status_code == 503
         state.update(fetch)
         r = client.get("/dashboard.png")
@@ -107,23 +110,23 @@ def test_endpoints_serve_cached_png_and_go_stale():
 
 
 def test_rotate_requests():
-    app = create_app(Settings(tz="America/Los_Angeles"), fetch=lambda: None, poll=False)
-    with TestClient(app) as client:
+    app = create_app(Settings(tz="America/Los_Angeles", control_token="t", admin_password="pw"), fetch=lambda: None, poll=False)
+    with TestClient(app, headers=AUTH) as client:
         assert client.get("/rotate/count").text == "0"
-        assert "<form" in client.get("/rotate").text
-        r = client.post("/rotate", follow_redirects=False)
-        assert r.status_code == 303 and r.headers["location"] == "/rotate?sent=1"
+        assert "Rotate Kindle" in client.get("/admin").text
+        r = client.post("/admin/rotate", follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"] == "/admin?done=rotate"
         assert client.get("/rotate/count").text == "1"
-        assert "Requested" in client.get("/rotate?sent=1").text
+        assert "Rotate requested" in client.get("/admin?done=rotate").text
 
 
 def test_kindle_battery_report_reaches_header_and_status():
     snap = sample_snapshot(NOW, TZ)
-    app = create_app(Settings(tz="America/Los_Angeles"), fetch=lambda: snap, poll=False)
+    app = create_app(Settings(tz="America/Los_Angeles", control_token="t", admin_password="pw"), fetch=lambda: snap, poll=False)
     state = app.state.dash
-    with TestClient(app) as client:
+    with TestClient(app, headers=AUTH) as client:
         state.update(lambda: snap)
-        plain = state.images["portrait"]
+        plain = state.images[("solar", "portrait")]
         plain_land = client.get("/landscape.png?rotate=270").content
         assert client.get("/status").json()["kindle"] is None
         # malformed reports are ignored, never break the image
@@ -135,10 +138,10 @@ def test_kindle_battery_report_reaches_header_and_status():
         # the change is in the image served with the report, not a poll later
         assert r.content != plain_land
         assert client.get("/landscape.png?rotate=270&battery=64&charging=1").content == r.content
-        assert state.images["portrait"].tobytes() != plain.tobytes()
+        assert state.images[("solar", "portrait")].tobytes() != plain.tobytes()
         state.update(lambda: snap)
         # header only: the rest of the image is unchanged
-        assert state.images["portrait"].crop((0, 130, 1236, 1648)).tobytes() == plain.crop((0, 130, 1236, 1648)).tobytes()
+        assert state.images[("solar", "portrait")].crop((0, 130, 1236, 1648)).tobytes() == plain.crop((0, 130, 1236, 1648)).tobytes()
         state.kindle_at = datetime(2020, 1, 1, tzinfo=timezone.utc)  # long ago -> hidden again
         state.update(lambda: snap)
-        assert state.images["portrait"].tobytes() == plain.tobytes()
+        assert state.images[("solar", "portrait")].tobytes() == plain.tobytes()

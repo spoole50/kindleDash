@@ -36,6 +36,16 @@ ROT_FILE="$KD_DIR/rotation"
 set -- $ROTATIONS
 ROTATE="$(cat "$ROT_FILE" 2>/dev/null)"
 case " $ROTATIONS " in *" $ROTATE "*) [ -n "$ROTATE" ] || ROTATE=$1 ;; *) ROTATE=$1 ;; esac
+echo "$ROTATE" > "$ROT_FILE"  # the touch watcher reads it for taps
+
+# Page (tab) on screen, also remembered. Only the server's tap replies change it.
+PAGE_FILE="$KD_DIR/page"
+read_page() {
+    PAGE="$(cat "$PAGE_FILE" 2>/dev/null)"
+    case "$PAGE" in ''|*[!a-z]*) PAGE=solar ;; esac
+}
+read_page
+echo "$PAGE" > "$PAGE_FILE"
 
 # The rotation after the current one in $ROTATIONS, wrapping around.
 next_rotation() {
@@ -53,7 +63,7 @@ next_rotation() {
 apply_rotation() {
     case "$ROTATE" in 90|270) layout=landscape ;; *) layout=portrait ;; esac
     case "$ROTATE" in 90|180) MARKER_ROW=0 ;; *) MARKER_ROW=-1 ;; esac
-    FULL_URL="$SERVER/$layout.png?rotate=$ROTATE"
+    FULL_URL="$SERVER/$layout.png?rotate=$ROTATE&page=$PAGE"
 }
 apply_rotation
 
@@ -103,8 +113,38 @@ button_watcher() {
     done
 }
 
-# Touchscreen (pt_mt, multitouch). A hold of TOUCH_HOLD_MS..TOUCH_MAX_MS,
-# measured from touch down to lift, asks the main loop to rotate (USR2).
+# A tap goes to the server, which knows what's drawn where. Its reply (200) is
+# lines of: "flash <left> <top> <width> <height>" (panel pixels) to show the
+# press, "page <name>" to switch tabs, "redraw" to fetch the page again now.
+# 204 means nothing was hit. Page switches and redraws are the main loop's
+# job (ALRM); a flash with neither is undone by redrawing the current image.
+send_tap() {
+    rot="$(cat "$ROT_FILE" 2>/dev/null)"; pg="$(cat "$PAGE_FILE" 2>/dev/null)"
+    code="$(curl -s -o "$STATE/tap.txt" -w '%{http_code}' -X POST -H "X-Kindle-Token: $TOKEN" \
+        --connect-timeout "$CONNECT_TIMEOUT" -m 15 "$SERVER/tap?x=$1&y=$2&rotate=${rot:-0}&page=${pg:-solar}")"
+    case "$code" in
+        200) ;;
+        204) return ;;
+        *) log "tap at $1,$2 refused or failed: HTTP ${code:-none} $(head -c 100 "$STATE/tap.txt" 2>/dev/null)"; return ;;
+    esac
+    flashed=""; wake=""
+    while read -r cmd a b c d; do
+        case "$cmd" in
+            flash) "$FBINK" -q -g file="$BIN/black.png",x="$a",y="$b",w="$c",h="$d" 2>>"$LOG"; flashed=1 ;;
+            page) case "$a" in ''|*[!a-z]*) ;; *) echo "$a" > "$PAGE_FILE"; wake=1 ;; esac ;;
+            redraw) wake=1 ;;
+        esac
+    done < "$STATE/tap.txt"
+    if [ -n "$wake" ]; then
+        kill -ALRM "$MAIN_PID"
+    elif [ -n "$flashed" ]; then
+        "$FBINK" -q -g file="$PNG" 2>>"$LOG"
+    fi
+}
+
+# Touchscreen (pt_mt, multitouch). A tap shorter than TAP_MAX_MS goes to the
+# server (send_tap). A hold of TOUCH_HOLD_MS..TOUCH_MAX_MS, measured from touch
+# down to lift, asks the main loop to rotate (USR2).
 # A touch produces many events, so read them in chunks: one read() returns as
 # many whole 16-byte events as are queued.
 EV_BTN_TOUCH=$((1 + 330 * 65536))
@@ -144,7 +184,9 @@ touch_watcher() {
                     logged=$((logged + 1))
                     log "touch ${ms}ms down x=$sx y=$sy up x=$x y=$y"
                 fi
-                if [ "$ms" -ge "$TOUCH_HOLD_MS" ] && [ "$ms" -le "$TOUCH_MAX_MS" ] && in_touch_area; then
+                if [ "$TAPS" = "1" ] && [ "$ms" -lt "$TAP_MAX_MS" ]; then
+                    send_tap "${sx:-$x}" "${sy:-$y}"
+                elif [ "$TOUCH_ROTATE" = "1" ] && [ "$ms" -ge "$TOUCH_HOLD_MS" ] && [ "$ms" -le "$TOUCH_MAX_MS" ] && in_touch_area; then
                     log "touch hold ${ms}ms at x=$sx y=$sy -> rotate"
                     kill -USR2 "$MAIN_PID"
                 fi
@@ -186,6 +228,9 @@ trap 'shutdown library' USR1
 trap 'shutdown signal' TERM INT
 rotate_now=""
 trap 'rotate_now=1' USR2
+# a tap asked for a redraw or another page. (Not HUP: nohup leaves that ignored.)
+refresh_now=""
+trap 'refresh_now=1' ALRM
 
 lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null
 if [ "$STOP_FRAMEWORK" = "1" ]; then
@@ -202,13 +247,14 @@ if [ "$POWER_BUTTON" = "1" ] && [ -r "$BUTTON_DEV" ]; then
     WATCHER=$!
     log "power button watcher on $BUTTON_DEV"
 fi
-if [ "$TOUCH_ROTATE" = "1" ] && [ -r "$TOUCH_DEV" ]; then
+if { [ "$TOUCH_ROTATE" = "1" ] || [ "$TAPS" = "1" ]; } && [ -r "$TOUCH_DEV" ]; then
     touch_watcher &
     TOUCHER=$!
-    log "touch watcher on $TOUCH_DEV (hold ${TOUCH_HOLD_MS}ms, area: ${TOUCH_AREA:-anywhere})"
+    log "touch watcher on $TOUCH_DEV (taps: $TAPS, rotate hold: $TOUCH_ROTATE ${TOUCH_HOLD_MS}ms, area: ${TOUCH_AREA:-anywhere})"
 fi
 
 last_sum=""
+force=""  # draw the next fetch even if unchanged (it may be under a tap's flash)
 draws=0
 fail_since=""
 last_rc=""
@@ -223,10 +269,23 @@ while true; do
         last_sum=""  # full redraw of the new layout
         draws=0
     fi
+    if [ -n "$refresh_now" ]; then
+        refresh_now=""
+        old_page=$PAGE
+        read_page
+        if [ "$PAGE" != "$old_page" ]; then
+            apply_rotation
+            log "page $PAGE: $FULL_URL"
+            last_sum=""  # full redraw of the new page
+            draws=0
+        else
+            force=1
+        fi
+    fi
     read_battery
-    if curl -s -f --connect-timeout "$CONNECT_TIMEOUT" -m "$MAX_TIME" -o "$TMP" "$FULL_URL$BATTERY_QS"; then
+    if curl -s -f -H "X-Kindle-Token: $TOKEN" --connect-timeout "$CONNECT_TIMEOUT" -m "$MAX_TIME" -o "$TMP" "$FULL_URL$BATTERY_QS"; then
         sum="$(md5sum "$TMP" | cut -d' ' -f1)"
-        if [ "$sum" != "$last_sum" ]; then
+        if [ "$sum" != "$last_sum" ] || [ -n "$force" ]; then
             mv "$TMP" "$PNG"
             draws=$((draws + 1))
             if [ $draws -ge "$FULL_REFRESH_EVERY" ] || [ -z "$last_sum" ]; then
@@ -236,13 +295,14 @@ while true; do
                 "$FBINK" -q -g file="$PNG" 2>>"$LOG"         # partial refresh
             fi
             last_sum="$sum"
+            force=""
             log "drew (draws=$draws) battery=${bat:-?}% charging=${chg:-?} uptime=$(cut -d' ' -f1 /proc/uptime)s powerd=$(lipc-get-prop com.lab126.powerd state 2>/dev/null)"
         fi
         [ -n "$fail_since" ] && log "recovered"
         fail_since=""
-        # the Rotate button on $SERVER/rotate bumps this counter
+        # the Rotate button on $SERVER/admin bumps this counter
         if [ "$REMOTE_ROTATE" = "1" ]; then
-            rc="$(curl -s -f --connect-timeout "$CONNECT_TIMEOUT" -m 10 "$SERVER/rotate/count")"
+            rc="$(curl -s -f -H "X-Kindle-Token: $TOKEN" --connect-timeout "$CONNECT_TIMEOUT" -m 10 "$SERVER/rotate/count")"
             case "$rc" in
                 ''|*[!0-9]*) ;;
                 *) if [ -n "$last_rc" ] && [ "$rc" -gt "$last_rc" ]; then
@@ -252,7 +312,8 @@ while true; do
             esac
         fi
     else
-        log "fetch failed (curl exit $?)"
+        err=$?
+        [ $err = 22 ] && log "fetch refused or failed: HTTP error (is TOKEN in config.sh right?)" || log "fetch failed (curl exit $err)"
         if [ -z "$fail_since" ]; then
             fail_since="$(date '+%H:%M')"
             error_marker "$fail_since"
@@ -261,8 +322,8 @@ while true; do
         wifi_up || reconnect_wifi
     fi
     save_syslog
-    [ -n "$rotate_now" ] && continue
+    [ -n "$rotate_now" ] || [ -n "$refresh_now" ] && continue
     sleep "$INTERVAL" &
-    wait $!  # interrupted by USR1/USR2, so presses and touches act at once
+    wait $!  # interrupted by USR1/USR2/ALRM, so presses and touches act at once
     kill $! 2>/dev/null
 done

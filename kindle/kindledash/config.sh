@@ -2,8 +2,15 @@
 
 # The Pi's LAN address and port (from docker-compose.yml)
 SERVER="http://192.168.113.186:8765"
+# Must match CONTROL_TOKEN in the Pi's .env. The server refuses every image,
+# tap and rotate check without it.
+TOKEN=""
+# 1 = send taps to the server (tabs, light switches). Touches shorter than
+# TAP_MAX_MS count as taps.
+TAPS=1
+TAP_MAX_MS=1000
 # Orientations to cycle through. A 2 s touch-and-hold (or the Rotate button at
-# $SERVER/rotate) moves to the next one; the current one is remembered in
+# $SERVER/admin) moves to the next one; the current one is remembered in
 # kindledash/rotation on the USB drive.
 #   0   portrait, upright
 #   90  landscape, Kindle turned counter-clockwise (power button on the right)
@@ -37,5 +44,5 @@ TOUCH_DEV=/dev/input/event1
 # Empty = anywhere. The first touches of each run are logged with their
 # coordinates ("touch down x=... y=...") so you can find a corner.
 TOUCH_AREA=""
-# 1 = also rotate when the Rotate button at $SERVER/rotate is pressed
+# 1 = also rotate when the Rotate button at $SERVER/admin is pressed
 REMOTE_ROTATE=1

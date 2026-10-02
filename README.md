@@ -12,6 +12,10 @@ Landscape (`/landscape.png`):
 
 ![landscape](docs/sample-landscape.png)
 
+Lights tab (`/portrait.png?page=lights`):
+
+![lights](docs/sample-lights.png)
+
 *(Screenshots use synthetic data: `python -m kindle_dash.sample docs/sample.png America/Los_Angeles`.)*
 
 ## What's on it
@@ -26,6 +30,17 @@ Landscape (`/landscape.png`):
 | MPPT solar input, 24 h | `pv_power_w` timeseries |
 | Solar today Wh / $, battery used today Wh / $ | "Solar Production" / "Battery Usage" integrals, from local midnight |
 | Production per day (7 days, today hatched since it's partial) | "Production Per Day" |
+
+### Lights page
+
+The **LIGHTS** tab shows a big tile per Kasa smart plug (`KASA_HOSTS`): solid
+black is ON, outlined is OFF, pale gray is unreachable. Tap a tile to toggle it.
+The Pi talks to the plugs directly on the LAN (python-kasa), so nothing changes in
+Apple Home, and a change made either place shows up in the other. The page
+re-reads the plugs every `LIGHTS_REFRESH_SECONDS`. The Kindle picks up changes made elsewhere at its next poll.
+
+The plugs are addressed by IP because broadcast discovery doesn't reach them from
+the Pi, so give them DHCP reservations.
 
 Design rules for e-ink: every gray is a multiple of `0x11` (the panel's 16 levels),
 nothing relies on colour, type is large and bold, and there's an "Updated HH:MM" stamp.
@@ -45,7 +60,28 @@ docker compose up -d --build
 curl -s localhost:8765/health
 ```
 
-Open `http://<pi>:8765/dashboard.png` in a browser to check it.
+Set `CONTROL_TOKEN` and `ADMIN_PASSWORD` in `.env` (see [Security](#security)), then open
+`http://<pi>:8765/admin` in a browser and log in as `admin`.
+
+### Security
+
+Every route needs a credential except `/health`, which Docker's healthcheck uses and which only reports whether rendering is current:
+
+- **The Kindle's routes** (`/portrait.png`, `/landscape.png`, `/dashboard.png`, `/tap`, `/rotate/count`)
+  need `CONTROL_TOKEN` in an `X-Kindle-Token` header (`TOKEN` in the Kindle's `config.sh`).
+  With `CONTROL_ALLOW_IPS` set, they also have to come from one of those addresses. Give the Kindle a DHCP reservation.
+- **`/admin` and `/status`** use HTTP Basic auth, as `admin` / `ADMIN_PASSWORD`, so a phone or laptop
+  browser can log in. Admin buttons refuse posts started from another site.
+- Either credential left empty switches its routes off (503) rather than leaving them open.
+
+It's plain HTTP on the LAN, so anyone who can watch your Wi-Fi traffic could read the
+token or password. Don't forward the port.
+
+### Admin page
+
+`/admin` shows what the Kindle is showing (page, orientation, last fetch, battery) with a
+preview of that image, links to preview any page in either layout, the solar data
+status, a **Rotate Kindle 90°** button and a button per plug.
 
 ### Environment variables
 
@@ -59,6 +95,12 @@ Open `http://<pi>:8765/dashboard.png` in a browser to check it.
 | `PRICE_PER_KWH` | `0.48` | $ per kWh for the cost figures |
 | `REFRESH_SECONDS` | `30` | query + render interval |
 | `CHART_HOURS` / `SPARK_HOURS` / `DAYS` | `24` / `6` / `7` | chart, sparkline and bar-chart spans |
+| `CONTROL_TOKEN` | – | **required**: shared secret for the Kindle's routes; it sends it as `X-Kindle-Token`. Generate with `openssl rand -hex 16`. |
+| `CONTROL_ALLOW_IPS` | – | optional comma-separated list; the Kindle's routes refuse other addresses (403) |
+| `ADMIN_PASSWORD` | – | **required** for `/admin` and `/status` (user `admin`) |
+| `KASA_HOSTS` | – | comma-separated plug IPs for the lights page, in display order |
+| `LIGHTS_REFRESH_SECONDS` | `15` | how often plug states are re-read |
+| `TOUCH_SWAP_XY` / `TOUCH_FLIP_X` / `TOUCH_FLIP_Y` / `TOUCH_MAX_X` / `TOUCH_MAX_Y` | off / off / off / `1235` / `1647` | maps raw touch coordinates to panel pixels; the defaults assume they already match (see [Taps](#taps)) |
 
 ### Endpoints
 
@@ -67,8 +109,11 @@ Open `http://<pi>:8765/dashboard.png` in a browser to check it.
 | `GET /portrait.png[?rotate=0\|90\|180\|270]` | Latest 1236×1648 portrait render, served from memory. Sends an `ETag` and supports `If-None-Match` (returns 304). `/dashboard.png` is an alias. |
 | `GET /landscape.png[?rotate=…]` | 1648×1236 landscape layout. The Kindle panel is physically portrait, so the client requests it with `rotate=90` or `270`. |
 | `…&battery=<0-100>&charging=<0\|1>` | Optional on either image. The Kindle client sends its own battery this way, and the next render shows "Kindle [battery icon] 85%" in the header, next to the date. Low battery (under 20% and not charging) is drawn bold black. The indicator disappears if no report has arrived for 15 minutes. Malformed values are ignored. |
-| `GET /rotate` | Phone-friendly page with a **Rotate Kindle 90°** button. Pressing it (`POST /rotate`) bumps a counter. The Kindle polls `GET /rotate/count` and rotates once each time the counter goes up. |
-| `GET /status` | Current values as JSON, plus `last_success`, `stale_since` and `last_error` |
+| `…&page=solar\|lights` | Which tab to show, on either image (default `solar`). |
+| `POST /tap?x=&y=&rotate=&page=` | A tap at raw touch coordinates on the page the Kindle shows. Needs the token. Replies `204` if nothing was hit, otherwise lines: `flash <left> <top> <width> <height>` (panel pixels), `page <name>`, `redraw`. |
+| `GET /rotate/count` | Polled by the Kindle; it rotates once each time the counter goes up (the **Rotate** button on `/admin`). |
+| `GET /admin` | Admin page for a browser (see [Admin page](#admin-page)). `/admin/image.png?page=&layout=` serves a page upright, and `POST /admin/rotate` and `POST /admin/plug?host=` are its buttons. |
+| `GET /status` | Admin login. Current values as JSON, plus `last_success`, `stale_since` and `last_error` |
 | `GET /health` | 200 if the last successful render is under 3 minutes old, otherwise 503. The Docker `HEALTHCHECK` uses it. |
 
 A background task queries InfluxDB and renders every `REFRESH_SECONDS`. Requests
@@ -150,7 +195,7 @@ Every press is logged and the log is saved to disk right away. Set `POWER_BUTTON
 To switch to the next orientation, do either of these:
 
 - **Touch and hold the screen for 2 s, then let go.** Taps and holds longer than 8 s are ignored. The hold is measured when you lift your finger.
-- **Press Rotate at `http://<pi-ip>:8765/rotate`**, for example from a phone. The Kindle picks this up at its next poll, within `INTERVAL`.
+- **Press Rotate at `http://<pi-ip>:8765/admin`**, for example from a phone. The Kindle picks this up at its next poll, within `INTERVAL`.
 
 The Kindle shows "Rotating...", fetches the other layout and does a full refresh.
 The current orientation is saved in `kindledash/rotation`, so it survives restarts. Delete that file to go back to the first entry in `ROTATIONS`.
@@ -159,6 +204,26 @@ To turn landscape the other way, swap `270` for `90` in `ROTATIONS`.
 The first 20 touches of each run are logged with their raw coordinates, for example `touch 2100ms down x=... y=...`.
 The touch panel's axes don't necessarily match the screen's. To accept the hold only in one area, such as a corner, touch that corner a few times, read the coordinates from the log, and set `TOUCH_AREA="xmin ymin xmax ymax"`.
 `TOUCH_ROTATE=0` or `REMOTE_ROTATE=0` turns either trigger off.
+
+### Taps
+
+Set `TOKEN` in `config.sh` to the Pi's `CONTROL_TOKEN`. A touch shorter than
+`TAP_MAX_MS` (1 s) is sent to the server with its raw coordinates. The server works
+out what's under it, using the same geometry it drew with, and replies:
+
+- **tab**: the tab flashes black and the Kindle fetches the other page (full refresh)
+- **plug tile**: the tile flashes, the plug toggles, and the Kindle fetches the redrawn page (partial refresh)
+- **nothing**: no reply body, nothing happens
+
+The 2 s touch-and-hold still rotates. The current page is saved in
+`kindledash/page`, next to `kindledash/rotation`.
+
+The server logs every tap as `tap raw=… panel=… image=… -> action` (`docker logs kindle-solar-dashboard`).
+If taps land in the wrong place, the touch panel's axes don't match the screen.
+Tap near the top-left and bottom-right corners in portrait, compare `raw` with where
+you touched, and set `TOUCH_SWAP_XY`, `TOUCH_FLIP_X`/`TOUCH_FLIP_Y` and
+`TOUCH_MAX_X`/`TOUCH_MAX_Y` in `.env` until `panel` matches.
+A refused tap (wrong token, IP not allowed) is logged on the Kindle with its HTTP status.
 
 ### Stopping it
 
