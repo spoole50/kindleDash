@@ -142,7 +142,7 @@ def main() -> None:
     import uvicorn
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    uvicorn.run(create_app(), host="0.0.0.0", port=8000, log_level="info", access_log=False)
+    uvicorn.run(create_app(), host="0.0.0.0", port=8000, log_level="info", access_log=True)
 
 
 if __name__ == "__main__":

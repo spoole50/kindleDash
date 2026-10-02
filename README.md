@@ -115,7 +115,7 @@ dot_clean /Volumes/Kindle
 3. Tap **Solar Dashboard - Log** first. It shows whether FBInk was found; the hotfix normally installs it at `/mnt/us/libkh/bin/fbink`.
 4. Tap **Solar Dashboard - Start**.
 
-The log is at `/var/tmp/kindledash/kindledash.log`.
+The log is at `/mnt/us/kindledash/kindledash.log`.
 
 ### Stopping it
 

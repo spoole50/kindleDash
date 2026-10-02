@@ -8,9 +8,10 @@ if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
     exit 0  # already running
 fi
 mkdir -p /var/tmp/kindledash
+echo "$(date '+%F %T') start scriptlet ran (uid $(id -u))" >> /mnt/us/kindledash/kindledash.log
 if command -v setsid >/dev/null 2>&1; then
-    setsid nohup sh /mnt/us/kindledash/kindledash.sh >> /var/tmp/kindledash/kindledash.log 2>&1 < /dev/null &
+    setsid nohup sh /mnt/us/kindledash/kindledash.sh >> /mnt/us/kindledash/kindledash.log 2>&1 < /dev/null &
 else
-    nohup sh /mnt/us/kindledash/kindledash.sh >> /var/tmp/kindledash/kindledash.log 2>&1 < /dev/null &
+    nohup sh /mnt/us/kindledash/kindledash.sh >> /mnt/us/kindledash/kindledash.log 2>&1 < /dev/null &
 fi
 exit 0

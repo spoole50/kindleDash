@@ -4,7 +4,7 @@ BIN="$(cd "$(dirname "$0")" && pwd)"
 . "$BIN/config.sh"
 
 STATE=/var/tmp/kindledash
-LOG="$STATE/kindledash.log"
+LOG=/mnt/us/kindledash/kindledash.log   # on the USB drive, readable from a computer
 PNG="$STATE/dashboard.png"
 TMP="$STATE/download.png"
 mkdir -p "$STATE"
