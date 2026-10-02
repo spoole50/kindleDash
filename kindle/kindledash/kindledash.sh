@@ -78,9 +78,12 @@ button_watcher() {
     done
 }
 
+# Small inverted label drawn over the last image. FBInk draws in the panel's
+# native portrait orientation, so pick the panel row that lands in the image's
+# empty left margin / footer: ROTATE=90 puts the image's left edge on panel row 0.
+case "$ROTATE" in 90) MARKER_ROW=${MARKER_ROW:-0} ;; *) MARKER_ROW=${MARKER_ROW:--1} ;; esac
 error_marker() {
-    # small inverted label in the bottom-left corner; the image underneath stays
-    "$FBINK" -q -h -x 0 -y -1 " ! offline since $1 " 2>/dev/null
+    "$FBINK" -q -h -x 0 -y "$MARKER_ROW" " ! offline since $1 " 2>/dev/null
 }
 
 MAIN_PID=$$

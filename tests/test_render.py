@@ -27,9 +27,15 @@ def test_render_is_portrait_grayscale_with_eink_levels():
     assert _grays(img) <= {i * 0x11 for i in range(16)}
 
 
-def test_render_survives_empty_snapshot():
-    img = render.render(Snapshot(fetched_at=NOW), TZ)
-    assert img.size == (1236, 1648)
+def test_landscape_layout():
+    img = render.render(sample_snapshot(NOW, TZ), TZ, layout="landscape")
+    assert img.mode == "L" and img.size == (1648, 1236)
+    assert _grays(img) <= {i * 0x11 for i in range(16)}
+
+
+@pytest.mark.parametrize("layout,size", [("portrait", (1236, 1648)), ("landscape", (1648, 1236))])
+def test_render_survives_empty_snapshot(layout, size):
+    assert render.render(Snapshot(fetched_at=NOW), TZ, layout=layout).size == size
 
 
 def test_stale_badge_marks_header_only():
@@ -80,6 +86,11 @@ def test_endpoints_serve_cached_png_and_go_stale():
         assert Image.open(BytesIO(r.content)).size == (1236, 1648)
         assert client.get("/dashboard.png", headers={"If-None-Match": r.headers["etag"]}).status_code == 304
         assert Image.open(BytesIO(client.get("/dashboard.png?rotate=90").content)).size == (1648, 1236)
+        assert client.get("/portrait.png").content == r.content
+        land = client.get("/landscape.png")
+        assert Image.open(BytesIO(land.content)).size == (1648, 1236)
+        # rotated for the Kindle's portrait framebuffer
+        assert Image.open(BytesIO(client.get("/landscape.png?rotate=90").content)).size == (1236, 1648)
         assert client.get("/dashboard.png?rotate=45").status_code == 400
         assert client.get("/health").status_code == 200
         status = client.get("/status").json()
@@ -89,6 +100,7 @@ def test_endpoints_serve_cached_png_and_go_stale():
         state.update(fetch)
         r2 = client.get("/dashboard.png")
         assert r2.status_code == 200 and r2.content != r.content  # old image + badge
+        assert client.get("/landscape.png").content != land.content
         status = client.get("/status").json()
         assert status["stale_since"] == status["last_success"]
         assert "influx down" in status["last_error"]

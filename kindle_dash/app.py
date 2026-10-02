@@ -27,52 +27,61 @@ class State:
         self.s = settings
         self.lock = threading.Lock()
         self.snapshot: Snapshot | None = None
-        self.good_image: Image.Image | None = None  # last render from fresh data
-        self.image: Image.Image = render.placeholder("Waiting for data…", self.now(), settings.zone)
+        # per layout: last render from fresh data, and what's being served
+        self.good_images: dict[str, Image.Image] = {}
+        self.images: dict[str, Image.Image] = {
+            lay: render.placeholder("Waiting for data…", self.now(), settings.zone, lay) for lay in render.LAYOUTS
+        }
         self.last_render: datetime | None = None
         self.last_success: datetime | None = None
         self.stale_since: datetime | None = None
         self.last_error: str | None = None
-        self._png: dict[int, tuple[bytes, str]] = {}
+        self._png: dict[tuple[str, int], tuple[bytes, str]] = {}
 
     @staticmethod
     def now() -> datetime:
         return datetime.now(timezone.utc)
 
-    def _publish(self, img: Image.Image) -> None:
+    def _publish(self, images: dict[str, Image.Image]) -> None:
         with self.lock:
-            self.image = img
+            self.images = images
             self._png = {}
 
     def update(self, fetch) -> None:
         """One poll cycle. `fetch` returns a Snapshot or raises."""
         try:
             snap = fetch()
-            img = render.render(snap, self.s.zone, self.s.chart_hours, self.s.spark_hours)
+            imgs = {
+                lay: render.render(snap, self.s.zone, self.s.chart_hours, self.s.spark_hours, layout=lay)
+                for lay in render.LAYOUTS
+            }
         except Exception as exc:  # keep serving the last good image
             log.warning("refresh failed: %s", exc)
             self.last_error = f"{type(exc).__name__}: {exc}"
             if self.stale_since is None:
                 self.stale_since = self.last_success or self.now()
-                if self.good_image is not None:
-                    self._publish(render.stale_badge(self.good_image, self.stale_since, self.s.zone))
+                if self.good_images:
+                    self._publish({lay: render.stale_badge(im, self.stale_since, self.s.zone) for lay, im in self.good_images.items()})
                 else:
-                    self._publish(render.placeholder("InfluxDB unavailable", self.now(), self.s.zone))
+                    self._publish(
+                        {lay: render.placeholder("InfluxDB unavailable", self.now(), self.s.zone, lay) for lay in render.LAYOUTS}
+                    )
             return
         self.snapshot = snap
-        self.good_image = img
+        self.good_images = imgs
         self.last_success = self.last_render = snap.fetched_at
         self.stale_since = None
         self.last_error = None
-        self._publish(img)
+        self._publish(imgs)
 
-    def png(self, rotate: int) -> tuple[bytes, str]:
+    def png(self, layout: str, rotate: int) -> tuple[bytes, str]:
+        """Encoded once per (layout, rotation) per render; requests just read the cache."""
         with self.lock:
-            cached = self._png.get(rotate)
+            cached = self._png.get((layout, rotate))
             if cached is None:
-                data = render.to_png(self.image, rotate)
+                data = render.to_png(self.images[layout], rotate)
                 cached = (data, '"' + hashlib.md5(data).hexdigest() + '"')
-                self._png[rotate] = cached
+                self._png[(layout, rotate)] = cached
             return cached
 
     def healthy(self) -> bool:
@@ -108,15 +117,25 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
     app = FastAPI(title="kindle-solar-dashboard", lifespan=lifespan)
     app.state.dash = state
 
-    @app.get("/dashboard.png")
-    def dashboard(request: Request, rotate: int = Query(0)):
+    def serve(request: Request, layout: str, rotate: int) -> Response:
         if rotate not in (0, 90, 180, 270):
             raise HTTPException(400, "rotate must be 0, 90, 180 or 270")
-        data, etag = state.png(rotate)
+        data, etag = state.png(layout, rotate)
         headers = {"ETag": etag, "Cache-Control": "no-cache"}
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers=headers)
         return Response(data, media_type="image/png", headers=headers)
+
+    @app.get("/dashboard.png")
+    @app.get("/portrait.png")
+    def portrait(request: Request, rotate: int = Query(0)):
+        """1236 x 1648 portrait layout (the Kindle's native orientation)."""
+        return serve(request, "portrait", rotate)
+
+    @app.get("/landscape.png")
+    def landscape(request: Request, rotate: int = Query(0)):
+        """1648 x 1236 landscape layout; on the Kindle use ?rotate=90 or 270."""
+        return serve(request, "landscape", rotate)
 
     @app.get("/status")
     def status():

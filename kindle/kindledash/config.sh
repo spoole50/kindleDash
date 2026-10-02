@@ -1,8 +1,12 @@
 # Edit this file on the Kindle drive: kindledash/config.sh (/mnt/us/kindledash/config.sh)
 
 # Dashboard URL (the Pi's LAN address, port from docker-compose.yml)
-URL="http://192.168.113.186:8765/dashboard.png"
-# Optional rotation passed to the server: 0, 90, 180, 270
+#   portrait:  http://192.168.113.186:8765/portrait.png    with ROTATE=0
+#   landscape: http://192.168.113.186:8765/landscape.png   with ROTATE=90 or 270
+#     ROTATE=90  -> Kindle turned counter-clockwise (power button on the right)
+#     ROTATE=270 -> Kindle turned clockwise (power button on the left)
+#     (if the image comes out upside down, use the other one)
+URL="http://192.168.113.186:8765/portrait.png"
 ROTATE=0
 # Seconds between polls (the server re-renders every 30 s)
 INTERVAL=60

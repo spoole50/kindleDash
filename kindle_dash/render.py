@@ -260,7 +260,7 @@ def solar_chart(pts: list[Point], tz, start, end, w, h) -> Image.Image:
 
 def daily_chart(days, today, w, h) -> Image.Image:
     fig = plt.figure(figsize=(w / 100, h / 100), dpi=100, facecolor="white")
-    ax = fig.add_axes((0.02, 0.14, 0.96, 0.84))
+    ax = fig.add_axes((0.02, 44 / h, 0.96, 1 - 50 / h))
     for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)
     ax.set_yticks([])
@@ -285,128 +285,196 @@ def daily_chart(days, today, w, h) -> Image.Image:
     return _to_image(fig)
 
 
-# --------------------------------------------------------------------------- page
+# --------------------------------------------------------------------------- sections
+# Each section draws into a box (x0, y0, x1, y1), so both layouts share them.
 
 
-def render(snap: Snapshot, tz, chart_hours: int = 24, spark_hours: int = 6) -> Image.Image:
-    img = Image.new("L", (W, H), WHITE)
-    d = ImageDraw.Draw(img)
-    now = snap.fetched_at.astimezone(tz)
-    spark_since = snap.fetched_at - timedelta(hours=spark_hours)
+class _Ctx:
+    def __init__(self, img, snap: Snapshot, tz, chart_hours: int, spark_hours: int):
+        self.img, self.d, self.snap, self.tz = img, ImageDraw.Draw(img), snap, tz
+        self.chart_hours, self.spark_hours = chart_hours, spark_hours
+        self.now = snap.fetched_at.astimezone(tz)
+        self.spark_since = snap.fetched_at - timedelta(hours=spark_hours)
+        self.end = snap.fetched_at
+        self.start = self.end - timedelta(hours=chart_hours)
 
-    # ---- header
+
+def _header(c: _Ctx) -> int:
+    """Title, timestamp and rule across the top; returns the y below it."""
+    w = c.img.width
     y = 26
-    _text(d, (M, y + 70), "SOLAR", 64, bold=True, anchor="ls")
-    _text(d, (W - M, y + 44), f"Updated {now:%H:%M}", 40, bold=True, anchor="rs")
-    _text(d, (W - M, y + 80), f"{now:%a %-d %b}", 28, fill=DARK, anchor="rs")
+    _text(c.d, (M, y + 70), "SOLAR", 64, bold=True, anchor="ls")
+    _text(c.d, (w - M, y + 44), f"Updated {c.now:%H:%M}", 40, bold=True, anchor="rs")
+    _text(c.d, (w - M, y + 80), f"{c.now:%a %-d %b}", 28, fill=DARK, anchor="rs")
     y += 100
-    d.rectangle((M, y, W - M, y + 4), fill=BLACK)
-    y += 4 + GAP
+    c.d.rectangle((M, y, w - M, y + 4), fill=BLACK)
+    return y + 4 + GAP
 
-    # ---- hero: SoC + net power
-    hero_h = 256
-    half = (W - 2 * M - GAP) // 2
-    lbox = (M, y, M + half, y + hero_h)
-    rbox = (M + half + GAP, y, W - M, y + hero_h)
-    soc = snap.get("soc")
-    state, left = battery_state(snap)
 
-    _tile(d, lbox, "BATTERY")
-    _value_unit(d, lbox[0] + 22, lbox[1] + 150, fmt_num(soc, 1), "%", 120, 60)
-    # battery gauge
-    bx0, by0, bx1, by1 = lbox[0] + 22, lbox[1] + 168, lbox[2] - 40, lbox[1] + 200
+def _footer(c: _Ctx) -> None:
+    """Right-aligned; the left side stays empty for the Kindle client's error marker."""
+    w, h = c.img.size
+    data_at = c.snap.latest_time.astimezone(c.tz).strftime("%H:%M:%S") if c.snap.latest_time else "--"
+    _text(c.d, (w - M, h - 16), f"Victron via InfluxDB  \u00b7  newest sample {data_at}", 22, fill=DARK, anchor="rs")
+
+
+def _battery_tile(c: _Ctx, box) -> None:
+    d, soc = c.d, c.snap.get("soc")
+    _, left = battery_state(c.snap)
+    _tile(d, box, "BATTERY")
+    _value_unit(d, box[0] + 22, box[1] + 150, fmt_num(soc, 1), "%", 120, 60)
+    bx0, by0, bx1, by1 = box[0] + 22, box[1] + 168, box[2] - 40, box[1] + 200
     d.rectangle((bx0, by0, bx1, by1), outline=BLACK, width=3)
     d.rectangle((bx1, by0 + 9, bx1 + 10, by1 - 9), fill=BLACK)
     if soc is not None:
         fill_w = (bx1 - bx0 - 10) * max(0.0, min(soc, 100.0)) / 100
         d.rectangle((bx0 + 5, by0 + 5, bx0 + 5 + fill_w, by1 - 5), fill=INK)
-    _text(d, (lbox[0] + 22, lbox[3] - 18), "Time left", 30, fill=DARK, anchor="ls")
-    _text(d, (lbox[2] - 22, lbox[3] - 18), left, 34, bold=True, anchor="rs")
+    _text(d, (box[0] + 22, box[3] - 18), "Time left", 30, fill=DARK, anchor="ls")
+    _text(d, (box[2] - 22, box[3] - 18), left, 34, bold=True, anchor="rs")
 
-    power = snap.get("power_w")
-    _tile(d, rbox, "NET POWER")
-    _value_unit(d, rbox[0] + 22, rbox[1] + 140, fmt_num(power, 0, signed=True), "W", 92, 48)
-    arrow = {"CHARGING": "▲", "DISCHARGING": "▼"}.get(state, "●")
-    _text(d, (rbox[2] - 22, rbox[1] + 16), f"{arrow} {state}", 28, bold=True, anchor="ra")
-    sl_box = (rbox[0] + 22, rbox[1] + 168, rbox[2] - 30, rbox[3] - 46)
-    sparkline(d, sl_box, snap.series.get("soc", []), spark_since)
-    _text(d, (rbox[0] + 22, rbox[3] - 14), f"SoC, last {spark_hours} h", 24, fill=DARK, anchor="ls")
-    y += hero_h + GAP
 
-    # ---- stat tiles
-    tile_h = 214
-    tw = (W - 2 * M - 2 * GAP) // 3
-    boxes = [(M + i * (tw + GAP), y, M + i * (tw + GAP) + tw, y + tile_h) for i in range(3)]
+def _net_power_tile(c: _Ctx, box) -> None:
+    d = c.d
+    state, _ = battery_state(c.snap)
+    _tile(d, box, "NET POWER")
+    _value_unit(d, box[0] + 22, box[1] + 140, fmt_num(c.snap.get("power_w"), 0, signed=True), "W", 92, 48)
+    arrow = {"CHARGING": "\u25b2", "DISCHARGING": "\u25bc"}.get(state, "\u25cf")
+    _text(d, (box[2] - 22, box[1] + 16), f"{arrow} {state}", 28, bold=True, anchor="ra")
+    sparkline(d, (box[0] + 22, box[1] + 168, box[2] - 30, box[3] - 46), c.snap.series.get("soc", []), c.spark_since)
+    _text(d, (box[0] + 22, box[3] - 14), f"SoC, last {c.spark_hours} h", 24, fill=DARK, anchor="ls")
 
-    b = boxes[0]
-    _tile(d, b, "VOLTAGE")
+
+def _stat_tiles(c: _Ctx, box) -> None:
+    """Voltage, battery current and solar input side by side."""
+    d, snap = c.d, c.snap
+    x0, y0, x1, y1 = box
+    tw = (x1 - x0 - 2 * GAP) // 3
+    vs, us = (72, 40) if tw >= 360 else (62, 34)  # narrower tiles in landscape
+    b0, b1, b2 = [(x0 + i * (tw + GAP), y0, x0 + i * (tw + GAP) + tw, y1) for i in range(3)]
+
+    _tile(d, b0, "VOLTAGE")
     for row, (lab, key) in enumerate((("Shunt", "shunt_v"), ("MPPT", "mppt_v"))):
-        by = b[1] + 96 + row * 54
-        _text(d, (b[0] + 22, by), lab, 30, fill=DARK, anchor="ls")
-        _value_unit(d, b[2] - 22, by, fmt_num(snap.get(key), 1), "V", 50, 30, anchor="rs")
-    sparkline(d, (b[0] + 22, b[3] - 42, b[2] - 30, b[3] - 16), snap.series.get("shunt_v", []), spark_since)
+        by = b0[1] + 96 + row * 54
+        _text(d, (b0[0] + 22, by), lab, 30, fill=DARK, anchor="ls")
+        _value_unit(d, b0[2] - 22, by, fmt_num(snap.get(key), 1), "V", 50, 30, anchor="rs")
+    sparkline(d, (b0[0] + 22, b0[3] - 42, b0[2] - 30, b0[3] - 16), snap.series.get("shunt_v", []), c.spark_since)
 
-    b = boxes[1]
-    _tile(d, b, "BATTERY CURRENT")
-    _value_unit(d, b[0] + 22, b[1] + 124, fmt_num(snap.get("current_a"), 1, signed=True), "A", 72, 40)
-    sparkline(d, (b[0] + 22, b[1] + 146, b[2] - 30, b[3] - 18), snap.series.get("current_a", []), spark_since, baseline=0)
+    for b, label, key, val, unit in (
+        (b1, "BATTERY CURRENT", "current_a", fmt_num(snap.get("current_a"), 1, signed=True), "A"),
+        (b2, "SOLAR INPUT", "pv_w", fmt_num(snap.get("pv_w"), 0), "W"),
+    ):
+        _tile(d, b, label)
+        _value_unit(d, b[0] + 22, b[1] + 124, val, unit, vs, us)
+        sparkline(d, (b[0] + 22, b[1] + 146, b[2] - 30, b[3] - 18), snap.series.get(key, []), c.spark_since, baseline=0)
 
-    b = boxes[2]
-    _tile(d, b, "SOLAR INPUT")
-    _value_unit(d, b[0] + 22, b[1] + 124, fmt_num(snap.get("pv_w"), 0), "W", 72, 40)
-    sparkline(d, (b[0] + 22, b[1] + 146, b[2] - 30, b[3] - 18), snap.series.get("pv_w", []), spark_since, baseline=0)
-    y += tile_h + GAP
 
-    # ---- battery power chart (24 h)
-    end = snap.fetched_at
-    start = end - timedelta(hours=chart_hours)
-    ch = 300
-    _text(d, (M, y + 30), f"BATTERY POWER (W), {chart_hours} h", 30, bold=True, anchor="ls")
+def _power_chart_section(c: _Ctx, box) -> None:
+    d, (x0, y0, x1, y1) = c.d, box
+    _text(d, (x0, y0 + 30), f"BATTERY POWER (W), {c.chart_hours} h", 30, bold=True, anchor="ls")
     # key: solid = charge, hatched = discharge
-    kx = W - M
-    kx -= _text(d, (kx, y + 30), "Discharge", 26, bold=True, anchor="rs") + 12
-    _hatch_swatch(img, (kx - 34, y + 6, kx, y + 32))
+    kx = x1
+    kx -= _text(d, (kx, y0 + 30), "Discharge", 26, bold=True, anchor="rs") + 12
+    _hatch_swatch(c.img, (kx - 34, y0 + 6, kx, y0 + 32))
     kx -= 34 + 30
-    kx -= _text(d, (kx, y + 30), "Charge", 26, bold=True, anchor="rs") + 12
-    d.rectangle((kx - 34, y + 6, kx, y + 32), fill=DARK)
-    chart = power_chart(snap.series.get("power_w", []), tz, start, end, W - 2 * M, ch - 44)
-    img.paste(chart, (M, y + 44))
-    y += ch + GAP
+    kx -= _text(d, (kx, y0 + 30), "Charge", 26, bold=True, anchor="rs") + 12
+    d.rectangle((kx - 34, y0 + 6, kx, y0 + 32), fill=DARK)
+    chart = power_chart(c.snap.series.get("power_w", []), c.tz, c.start, c.end, x1 - x0, y1 - y0 - 44)
+    c.img.paste(chart, (x0, y0 + 44))
 
-    # ---- solar input chart (24 h)
-    sh = 214
-    _text(d, (M, y + 30), f"MPPT SOLAR INPUT (W), {chart_hours} h", 30, bold=True, anchor="ls")
-    chart = solar_chart(snap.series.get("pv_w", []), tz, start, end, W - 2 * M, sh - 44)
-    img.paste(chart, (M, y + 44))
-    y += sh + GAP
 
-    # ---- today + production per day
-    bottom = H - 50
-    lw = 380
-    th = (bottom - y - GAP) // 2
+def _solar_chart_section(c: _Ctx, box) -> None:
+    x0, y0, x1, y1 = box
+    _text(c.d, (x0, y0 + 30), f"MPPT SOLAR INPUT (W), {c.chart_hours} h", 30, bold=True, anchor="ls")
+    chart = solar_chart(c.snap.series.get("pv_w", []), c.tz, c.start, c.end, x1 - x0, y1 - y0 - 44)
+    c.img.paste(chart, (x0, y0 + 44))
+
+
+def _today_tiles(c: _Ctx, box) -> None:
+    """Solar today and battery used today, stacked."""
+    snap, (x0, y0, x1, y1) = c.snap, box
+    th = (y1 - y0 - GAP) // 2
     for i, (label, wh, cost) in enumerate(
         (
             ("SOLAR TODAY", snap.solar_today_wh, snap.solar_today_cost),
             ("BATTERY USED", snap.battery_today_wh, snap.battery_today_cost),
         )
     ):
-        b = (M, y + i * (th + GAP), M + lw, y + i * (th + GAP) + th)
-        _tile(d, b, label)
+        b = (x0, y0 + i * (th + GAP), x1, y0 + i * (th + GAP) + th)
+        _tile(c.d, b, label)
         v, u = fmt_energy(wh)
-        _value_unit(d, b[0] + 22, b[1] + 108, v, u, 60, 32)
-        _text(d, (b[0] + 22, b[3] - 20), fmt_money(cost), 44, bold=True, anchor="ls")
-        _text(d, (b[2] - 22, b[3] - 22), f"@ ${snap.price_per_kwh:.2f}/kWh", 22, fill=DARK, anchor="rs")
+        tall = th >= 200  # landscape: bigger numbers instead of a gap
+        _value_unit(c.d, b[0] + 22, b[1] + (128 if tall else 108), v, u, 76 if tall else 60, 38 if tall else 32)
+        _text(c.d, (b[0] + 22, b[3] - 20), fmt_money(cost), 60 if tall else 44, bold=True, anchor="ls")
+        _text(c.d, (b[2] - 22, b[3] - 22), f"@ ${snap.price_per_kwh:.2f}/kWh", 22, fill=DARK, anchor="rs")
 
-    dx = M + lw + GAP
-    _text(d, (dx, y + 30), "PRODUCTION PER DAY (kWh)", 30, bold=True, anchor="ls")
-    chart = daily_chart(snap.daily_wh, now.date(), W - M - dx, bottom - y - 44)
-    img.paste(chart, (dx, y + 44))
 
-    # ---- footer (left side kept empty for the Kindle client's error marker)
-    data_at = snap.latest_time.astimezone(tz).strftime("%H:%M:%S") if snap.latest_time else "--"
-    _text(d, (W - M, H - 16), f"Victron via InfluxDB  ·  newest sample {data_at}", 22, fill=DARK, anchor="rs")
+def _daily_section(c: _Ctx, box) -> None:
+    x0, y0, x1, y1 = box
+    _text(c.d, (x0, y0 + 30), "PRODUCTION PER DAY (kWh)", 30, bold=True, anchor="ls")
+    c.img.paste(daily_chart(c.snap.daily_wh, c.now.date(), x1 - x0, y1 - y0 - 44), (x0, y0 + 44))
 
-    return quantize(img)
+
+# --------------------------------------------------------------------------- layouts
+
+LAYOUTS = ("portrait", "landscape")
+
+
+def render(snap: Snapshot, tz, chart_hours: int = 24, spark_hours: int = 6, layout: str = "portrait") -> Image.Image:
+    if layout == "landscape":
+        return render_landscape(snap, tz, chart_hours, spark_hours)
+    return render_portrait(snap, tz, chart_hours, spark_hours)
+
+
+def render_portrait(snap: Snapshot, tz, chart_hours: int = 24, spark_hours: int = 6) -> Image.Image:
+    """1236 x 1648: hero row, stat tiles, two 24 h charts, today + per-day bars."""
+    c = _Ctx(Image.new("L", (W, H), WHITE), snap, tz, chart_hours, spark_hours)
+    y = _header(c)
+    half = (W - 2 * M - GAP) // 2
+    _battery_tile(c, (M, y, M + half, y + 256))
+    _net_power_tile(c, (M + half + GAP, y, W - M, y + 256))
+    y += 256 + GAP
+    _stat_tiles(c, (M, y, W - M, y + 214))
+    y += 214 + GAP
+    _power_chart_section(c, (M, y, W - M, y + 300))
+    y += 300 + GAP
+    _solar_chart_section(c, (M, y, W - M, y + 214))
+    y += 214 + GAP
+    bottom, lw = H - 50, 380
+    _today_tiles(c, (M, y, M + lw, bottom))
+    _daily_section(c, (M + lw + GAP, y, W - M, bottom))
+    _footer(c)
+    return quantize(c.img)
+
+
+def render_landscape(snap: Snapshot, tz, chart_hours: int = 24, spark_hours: int = 6) -> Image.Image:
+    """1648 x 1236: battery + today down the left, stats and charts on the right."""
+    w, h = H, W
+    c = _Ctx(Image.new("L", (w, h), WHITE), snap, tz, chart_hours, spark_hours)
+    y0 = _header(c)
+    bottom, lw = h - 50, 520
+    rx = M + lw + GAP
+
+    # left column: battery, net power, today's totals
+    y = y0
+    _battery_tile(c, (M, y, M + lw, y + 250))
+    y += 250 + GAP
+    _net_power_tile(c, (M, y, M + lw, y + 250))
+    y += 250 + GAP
+    _today_tiles(c, (M, y, M + lw, bottom))
+
+    # right column: stat tiles, charts, per-day bars
+    y = y0
+    _stat_tiles(c, (rx, y, w - M, y + 214))
+    y += 214 + GAP
+    rest = bottom - y - 2 * GAP
+    ph, sh = int(rest * 0.37), int(rest * 0.29)
+    _power_chart_section(c, (rx, y, w - M, y + ph))
+    y += ph + GAP
+    _solar_chart_section(c, (rx, y, w - M, y + sh))
+    y += sh + GAP
+    _daily_section(c, (rx, y, w - M, bottom))
+    _footer(c)
+    return quantize(c.img)
 
 
 def _hatch_swatch(img: Image.Image, box):
@@ -428,19 +496,20 @@ def stale_badge(img: Image.Image, since: datetime, tz) -> Image.Image:
     text = f"STALE since {since.astimezone(tz):%H:%M}"
     f = font(34, True)
     tw = d.textlength(text, font=f)
-    cx, cy = W // 2 - 40, 26 + 48
+    cx, cy = out.width // 2 - 40, 26 + 48
     box = (cx - tw / 2 - 22, cy - 32, cx + tw / 2 + 22, cy + 32)
     d.rounded_rectangle(box, radius=12, fill=BLACK)
     d.text((cx, cy), text, font=f, fill=WHITE, anchor="mm")
     return quantize(out)
 
 
-def placeholder(message: str, now: datetime, tz) -> Image.Image:
-    img = Image.new("L", (W, H), WHITE)
+def placeholder(message: str, now: datetime, tz, layout: str = "portrait") -> Image.Image:
+    w, h = (H, W) if layout == "landscape" else (W, H)
+    img = Image.new("L", (w, h), WHITE)
     d = ImageDraw.Draw(img)
-    _text(d, (W / 2, H / 2 - 40), "SOLAR", 96, bold=True, anchor="mm")
-    _text(d, (W / 2, H / 2 + 60), message, 40, anchor="mm")
-    _text(d, (W / 2, H / 2 + 120), f"{now.astimezone(tz):%H:%M}", 32, fill=DARK, anchor="mm")
+    _text(d, (w / 2, h / 2 - 40), "SOLAR", 96, bold=True, anchor="mm")
+    _text(d, (w / 2, h / 2 + 60), message, 40, anchor="mm")
+    _text(d, (w / 2, h / 2 + 120), f"{now.astimezone(tz):%H:%M}", 32, fill=DARK, anchor="mm")
     return quantize(img)
 
 

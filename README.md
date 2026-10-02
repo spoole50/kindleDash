@@ -4,9 +4,13 @@ Renders Victron solar/battery stats from InfluxDB as a 1236×1648 8-bit grayscal
 for a wall-mounted, jailbroken Kindle Paperwhite 11th gen. The data and queries
 mirror the **Solar Setup Home** Grafana dashboard.
 
-| Daytime (charging) | Night (discharging, InfluxDB down) |
+| Portrait: daytime (charging) | Portrait: night (discharging, InfluxDB down) |
 |---|---|
 | ![sample](docs/sample.png) | ![stale](docs/sample-night-stale.png) |
+
+Landscape (`/landscape.png`):
+
+![landscape](docs/sample-landscape.png)
 
 *(Screenshots use synthetic data: `python -m kindle_dash.sample docs/sample.png America/Los_Angeles`.)*
 
@@ -60,7 +64,8 @@ Open `http://<pi>:8765/dashboard.png` in a browser to check it.
 
 | Endpoint | |
 |---|---|
-| `GET /dashboard.png[?rotate=0\|90\|180\|270]` | Latest render, served from memory. Sends an `ETag` and supports `If-None-Match` (returns 304). |
+| `GET /portrait.png[?rotate=0\|90\|180\|270]` | Latest 1236×1648 portrait render, served from memory. Sends an `ETag` and supports `If-None-Match` (returns 304). `/dashboard.png` is an alias. |
+| `GET /landscape.png[?rotate=…]` | 1648×1236 landscape layout. The Kindle panel is physically portrait, so the client requests it with `rotate=90` or `270`. |
 | `GET /status` | Current values as JSON, plus `last_success`, `stale_since` and `last_error` |
 | `GET /health` | 200 if the last successful render is under 3 minutes old, otherwise 503. The Docker `HEALTHCHECK` uses it. |
 
@@ -110,7 +115,9 @@ cp -X ~/kindleDash/kindle/documents/*.sh /Volumes/Kindle/documents/
 dot_clean /Volumes/Kindle
 ```
 
-1. Check `URL` in `/Volumes/Kindle/kindledash/config.sh`. It should be `http://<pi-ip>:8765/dashboard.png` (currently `192.168.113.186`).
+1. Check `URL` and `ROTATE` in `/Volumes/Kindle/kindledash/config.sh`.
+   - **Portrait:** `http://<pi-ip>:8765/portrait.png` with `ROTATE=0`.
+   - **Landscape:** `http://<pi-ip>:8765/landscape.png` with `ROTATE=90` if the Kindle is turned counter-clockwise (power button on the right), or `ROTATE=270` if it's turned clockwise (power button on the left). If the image comes out upside down, use the other value.
 2. Eject. The three **Solar Dashboard** entries appear in the library.
 3. Tap **Solar Dashboard - Log** first. It shows whether FBInk was found; the hotfix normally installs it at `/mnt/us/libkh/bin/fbink`.
 4. Tap **Solar Dashboard - Start**.
