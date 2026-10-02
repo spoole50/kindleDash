@@ -12,6 +12,10 @@ Landscape (`/landscape.png`):
 
 ![landscape](docs/sample-landscape.png)
 
+Bluetti tab (`/portrait.png?page=bluetti`):
+
+![bluetti](docs/sample-bluetti.png)
+
 Power tab (`/portrait.png?page=lights`):
 
 ![lights](docs/sample-lights.png)
@@ -20,7 +24,7 @@ TV tab (`/portrait.png?page=tv`):
 
 ![tv](docs/sample-tv.png)
 
-*(Screenshots use synthetic data: `python -m kindle_dash.sample docs/sample.png America/Los_Angeles`.)*
+*(Screenshots use synthetic data: `python -m kindle_dash.sample docs/sample.png America/Los_Angeles [solar|bluetti]`.)*
 
 ## What's on it
 
@@ -34,6 +38,25 @@ TV tab (`/portrait.png?page=tv`):
 | MPPT solar input, 24 h | `pv_power_w` timeseries |
 | Solar today Wh / $, battery used today Wh / $ | "Solar Production" / "Battery Usage" integrals, from local midnight |
 | Production per day (7 days, today hatched since it's partial) | "Production Per Day" |
+
+### Bluetti page
+
+The **BLUETTI** tab shows the Bluetti power stations that
+bluetti2influx (the separate service in `~/docker/bluetti2influx`) reads over Bluetooth into the `bluetti` bucket
+(`BLUETTI_BUCKET`), one column per station:
+
+- battery %, charging / discharging / idle, and a rough time to empty or to full from
+  the capacity in `BLUETTI_STATIONS` and the power now (it ignores inverter losses)
+- power in and out, each split into AC and DC; an output that's switched off reads **OFF**
+- energy in and out since midnight
+- power in (filled) and out (line), and battery %, over 24 h
+
+`BLUETTI_STATIONS` lists the models to show, in order, with their capacity in Wh
+(default `AP300=2764.8,AC180=1152`; add the expansion batteries' capacity if you have
+any). A model in the data that isn't listed is shown after them, without a time estimate.
+A station with no reading for 2 minutes (bluetti2influx stopped, e.g. to use the
+Bluetti app) shows **NO DATA SINCE HH:MM**. AP300 counts as "in" what it passes
+through from the grid as well as what charges the battery, so the time to full uses in − out.
 
 ### Power page
 
@@ -145,7 +168,7 @@ status, a **Rotate Kindle 90°** button, a button per plug, and Apple TV pairing
 | `GET /portrait.png[?rotate=0\|90\|180\|270]` | Latest 1236×1648 portrait render, served from memory. Sends an `ETag` and supports `If-None-Match` (returns 304). `/dashboard.png` is an alias. |
 | `GET /landscape.png[?rotate=…]` | 1648×1236 landscape layout. The Kindle panel is physically portrait, so the client requests it with `rotate=90` or `270`. |
 | `…&battery=<0-100>&charging=<0\|1>` | Optional on either image. The Kindle client sends its own battery this way, and the next render shows "Kindle [battery icon] 85%" in the header, next to the date. Low battery (under 20% and not charging) is drawn bold black. The indicator disappears if no report has arrived for 15 minutes. Malformed values are ignored. |
-| `…&page=solar\|lights\|tv` | Which tab to show, on either image (default `solar`). |
+| `…&page=solar\|bluetti\|lights\|tv` | Which tab to show, on either image (default `solar`). |
 | `POST /tap?x=&y=&rotate=&page=` | A tap at raw touch coordinates on the page the Kindle shows. Needs the token. Replies `204` if nothing was hit, otherwise lines: `flash <left> <top> <width> <height>` (panel pixels), `page <name>`, `redraw`. |
 | `GET /rotate/count` | Polled by the Kindle; it rotates once each time the counter goes up (the **Rotate** button on `/admin`). |
 | `GET /admin` | Admin page for a browser (see [Admin page](#admin-page)). `/admin/image.png?page=&layout=` serves a page upright, and `POST /admin/rotate`, `POST /admin/plug?host=` and `POST /admin/tv/pair?protocol=companion\|airplay` / `/admin/tv/pin` / `/admin/tv/cancel` are its buttons. |

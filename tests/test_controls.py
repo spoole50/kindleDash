@@ -95,7 +95,7 @@ def test_tap_needs_token():
 
 def test_tap_tab_switches_page():
     app, _ = _app()
-    lights_tab = render.tab_boxes()[1][0]
+    lights_tab = next(box for box, action in render.tab_boxes() if action == "page:lights")
     with TestClient(app) as client:
         x, y = _center(lights_tab)
         r = client.post(f"/tap?x={x}&y={y}&rotate=0&page=solar", headers={"X-Kindle-Token": TOKEN})

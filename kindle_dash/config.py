@@ -38,6 +38,10 @@ class Settings:
     atv_host: str = ""
     atv_apps: tuple[tuple[str, str], ...] = ()
     atv_credentials: str = "/data/appletv.json"
+    # Bluetti stations (bluetti2influx): the bucket, and the models to show in order
+    # with their battery capacity in Wh, for the time-left estimate
+    bluetti_bucket: str = "bluetti"
+    bluetti_stations: tuple[tuple[str, float | None], ...] = (("AP300", 2764.8), ("AC180", 1152.0))
     # Raw touch coordinates -> panel pixels (portrait 1236 x 1648). The defaults
     # assume the touch panel already reports panel pixels.
     touch_swap_xy: bool = False
@@ -74,6 +78,8 @@ class Settings:
             atv_host=env("ATV_HOST", ""),
             atv_apps=tuple((n, b) for n, b in _plugs(env("ATV_APPS", "")) if b),
             atv_credentials=env("ATV_CREDENTIALS", cls.atv_credentials),
+            bluetti_bucket=env("BLUETTI_BUCKET", cls.bluetti_bucket),
+            bluetti_stations=_stations(env("BLUETTI_STATIONS", "")) or cls.bluetti_stations,
             touch_swap_xy=_flag(env("TOUCH_SWAP_XY", "")),
             touch_flip_x=_flag(env("TOUCH_FLIP_X", "")),
             touch_flip_y=_flag(env("TOUCH_FLIP_Y", "")),
@@ -93,3 +99,14 @@ def _plugs(value: str) -> list[tuple[str, str]]:
 
 def _flag(value: str) -> bool:
     return value.strip().lower() in ("1", "true", "yes")
+
+
+def _stations(value: str) -> tuple[tuple[str, float | None], ...]:
+    """"AP300=2764.8,AC180" -> (("AP300", 2764.8), ("AC180", None))."""
+    out = []
+    for model, wh in _plugs(value):
+        try:
+            out.append((model, float(wh) if wh else None))
+        except ValueError:
+            out.append((model, None))
+    return tuple(out)

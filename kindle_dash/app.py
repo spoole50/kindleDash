@@ -24,6 +24,7 @@ from .config import Settings
 from .data import Snapshot
 from .appletv import PROTOCOLS as TV_PROTOCOLS
 from .appletv import AppleTV
+from .bluetti import BluettiSnapshot
 from .plugs import KasaPlugs
 
 log = logging.getLogger("kindle_dash")
@@ -44,13 +45,17 @@ class State:
         self.render_lock = threading.Lock()  # one render at a time: poll cycle or battery change
         self.lights_lock = threading.Lock()  # lights renders are quick; don't queue them behind the solar one
         self.tv_lock = threading.Lock()
+        self.bluetti_lock = threading.Lock()
+        self.bluetti: BluettiSnapshot | None = None
+        self.bluetti_error: str | None = None
+        self.bluetti_stale_since: datetime | None = None
         self.snapshot: Snapshot | None = None
         # solar, per layout: last render from fresh data
         self.good_images: dict[str, Image.Image] = {}
         # what's being served, per (page, layout)
         self.images: dict[tuple[str, str], Image.Image] = {
             (page, lay): render.placeholder(msg, self.now(), settings.zone, lay, page)
-            for page, msg in (("solar", "Waiting for data…"), ("lights", "Connecting to plugs…"))
+            for page, msg in (("solar", "Waiting for data…"), ("bluetti", "Waiting for data…"), ("lights", "Connecting to plugs…"))
             for lay in render.LAYOUTS
         }
         self.plugs = KasaPlugs(settings.kasa_hosts, dict(settings.kasa_kinds))
@@ -114,6 +119,7 @@ class State:
         """Redraw the current data, e.g. so a new battery report shows in the image the Kindle is fetching."""
         self.render_lights()
         self.render_tv()
+        self.render_bluetti()
         with self.render_lock:
             if self.snapshot is None or self.stale_since is not None:
                 return  # nothing fresh to redraw; the next good poll picks the report up
@@ -159,6 +165,31 @@ class State:
             asyncio.get_running_loop().run_in_executor(None, self.render_tv)
         except RuntimeError:  # no loop (tests): draw now
             self.render_tv()
+
+    def render_bluetti(self) -> None:
+        """Redraw the Bluetti page from the last fetch, badged STALE while fetches fail."""
+        if self.bluetti is None:
+            return
+        with self.bluetti_lock:
+            kindle = self.kindle_battery()
+            imgs = {}
+            for lay in render.LAYOUTS:
+                img = render.render_bluetti(self.bluetti, self.now(), self.s.zone, lay, kindle, self.s.chart_hours)
+                imgs[lay] = render.stale_badge(img, self.bluetti_stale_since, self.s.zone) if self.bluetti_stale_since else img
+            self._publish(imgs, "bluetti")
+
+    def update_bluetti(self, fetch) -> None:
+        try:
+            self.bluetti = fetch()
+            self.bluetti_error = self.bluetti_stale_since = None
+        except Exception as exc:  # keep showing the last data, badged
+            log.warning("bluetti refresh failed: %s", exc)
+            self.bluetti_error = f"{type(exc).__name__}: {exc}"
+            if self.bluetti is None:
+                self._publish({lay: render.placeholder("InfluxDB unavailable", self.now(), self.s.zone, lay, "bluetti") for lay in render.LAYOUTS}, "bluetti")
+                return
+            self.bluetti_stale_since = self.bluetti_stale_since or self.bluetti.fetched_at
+        self.render_bluetti()
 
     def render_lights(self) -> None:
         """Redraw the lights page from the last plug states (once they've been read)."""
@@ -223,6 +254,12 @@ async def _poll(state: State, fetch) -> None:
         await asyncio.sleep(state.s.refresh_seconds)
 
 
+async def _poll_bluetti(state: State, fetch) -> None:
+    while True:
+        await asyncio.to_thread(state.update_bluetti, fetch)
+        await asyncio.sleep(state.s.refresh_seconds)
+
+
 async def _poll_lights(state: State) -> None:
     while True:
         try:
@@ -232,20 +269,27 @@ async def _poll_lights(state: State) -> None:
         await asyncio.sleep(state.s.lights_refresh_seconds)
 
 
-def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) -> FastAPI:
+def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, fetch_bluetti=None) -> FastAPI:
     settings = settings or Settings.from_env()
     state = State(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        source = None
-        nonlocal fetch
+        source = bluetti_source = None
+        nonlocal fetch, fetch_bluetti
         if fetch is None:
             from .data import InfluxSource
 
             source = InfluxSource(settings)
             fetch = source.fetch
+        if fetch_bluetti is None and poll and settings.bluetti_bucket:
+            from .bluetti import BluettiSource
+
+            bluetti_source = BluettiSource(settings)
+            fetch_bluetti = bluetti_source.fetch
         tasks = [asyncio.create_task(_poll(state, fetch)), asyncio.create_task(_poll_lights(state))] if poll else []
+        if poll and fetch_bluetti:
+            tasks.append(asyncio.create_task(_poll_bluetti(state, fetch_bluetti)))
         if poll and state.tv:
             tasks.append(asyncio.create_task(state.tv.run()))
         yield
@@ -254,8 +298,9 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
         await state.plugs.close()
         if state.tv:
             await state.tv.close()
-        if source:
-            source.close()
+        for src in (source, bluetti_source):
+            if src:
+                src.close()
 
     app = FastAPI(title="kindle-solar-dashboard", lifespan=lifespan)
     app.state.dash = state
@@ -311,7 +356,7 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
     @app.get("/dashboard.png", dependencies=[Kindle])
     @app.get("/portrait.png", dependencies=[Kindle])
     def portrait(request: Request, rotate: int = Query(0), page: str = Query("solar")):
-        """1236 x 1648 portrait layout (the Kindle's native orientation). ?page=solar|lights
+        """1236 x 1648 portrait layout (the Kindle's native orientation). ?page=solar|bluetti|lights|tv
 
         The Kindle client adds ?battery=<0-100>&charging=<0|1>; the next render shows it in the header.
         """
@@ -452,6 +497,11 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
             "healthy": state.healthy(),
             "kindle": {**state.kindle._asdict(), "reported_at": iso(state.kindle_at)} if state.kindle else None,
             "kindle_view": {"page": view[0], "layout": view[1], "rotate": view[2], "at": iso(view[3])} if view else None,
+            "bluetti": {
+                "stations": state.bluetti.to_json() if state.bluetti else None,
+                "fetched_at": iso(state.bluetti.fetched_at) if state.bluetti else None,
+                "error": state.bluetti_error,
+            },
             "plugs": [asdict(p) for p in state.plugs.plugs] if state.lights_polled else None,
             "tv": {
                 "connected": state.tv.connected,

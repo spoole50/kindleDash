@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
+from .bluetti import BluettiSnapshot, Station  # noqa: E402
 from .data import Point, Snapshot  # noqa: E402
 from .plugs import Plug  # noqa: E402
 from .touch import Target  # noqa: E402
@@ -314,9 +315,9 @@ class _Ctx:
 
 
 # Pages, in tab order: (name used in URLs and taps, tab label)
-PAGES = (("solar", "SOLAR"), ("lights", "POWER"), ("tv", "TV"))  # "lights" stays the URL name; Kindles remember it
+PAGES = (("solar", "SOLAR"), ("bluetti", "BLUETTI"), ("lights", "POWER"), ("tv", "TV"))  # "lights" stays the URL name; Kindles remember it
 HEADER_RULE_Y = 126  # the rule under the header; tabs sit above it
-TAB_SIZE, TAB_PAD, TAB_GAP = 44, 28, 16
+TAB_SIZE, TAB_PAD, TAB_GAP = 36, 22, 16  # four tabs, clear of the clock and date in portrait
 
 
 def tab_boxes() -> list[tuple[tuple[int, int, int, int], str]]:
@@ -815,6 +816,149 @@ def render_tv(
         x0, y0, x1, y1 = _tv_regions(layout)["apps"]
         _text(d, ((x0 + x1) / 2, (y0 + y1) / 2), "Add app shortcuts with ATV_APPS", 26, fill=MID, anchor="mm")
     _text(d, (w - M, h - 16), "Apple TV", 22, fill=DARK, anchor="rs")
+    return quantize(img)
+
+
+# --------------------------------------------------------------------------- Bluetti page
+
+
+def bluetti_power_chart(pts_in: list[Point], pts_out: list[Point], tz, start, end, w, h) -> Image.Image:
+    """Input as a pale filled area, output as a heavy black line."""
+    fig, ax = _fig(w, h)
+    _time_axis(ax, tz, start, end)
+    top = 0.0
+    if pts_in:
+        xs, ys = _with_gaps(pts_in, timedelta(minutes=20))
+        ax.fill_between(xs, 0, ys, facecolor=HEX[LIGHT], edgecolor=HEX[DARK], linewidth=1.5)
+        top = max(top, float(np.nanmax(ys)))
+    if pts_out:
+        xs, ys = _with_gaps(pts_out, timedelta(minutes=20))
+        ax.plot(xs, ys, color=HEX[BLACK], linewidth=3)
+        top = max(top, float(np.nanmax(ys)))
+    if not pts_in and not pts_out:
+        _no_data(ax)
+    ax.set_ylim(0, max(top * 1.1, 50))
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: fmt_num(v, 0)))
+    return _to_image(fig)
+
+
+def percent_chart(pts: list[Point], tz, start, end, w, h) -> Image.Image:
+    fig, ax = _fig(w, h)
+    _time_axis(ax, tz, start, end)
+    if pts:
+        xs, ys = _with_gaps(pts, timedelta(minutes=20))
+        ax.fill_between(xs, 0, ys, facecolor=HEX[FAINT], linewidth=0)
+        ax.plot(xs, ys, color=HEX[BLACK], linewidth=2.5)
+    else:
+        _no_data(ax)
+    ax.set_ylim(0, 100)
+    ax.yaxis.set_major_locator(plt.FixedLocator([0, 50, 100]))
+    return _to_image(fig)
+
+
+def _bluetti_card(d: ImageDraw.ImageDraw, box, st: Station, now: datetime, tz) -> None:
+    """Name and state, battery %, time to empty or full, power in and out, and today's energy.
+
+    Wide boxes (landscape) put the flows beside the battery instead of under it.
+    """
+    x0, y0, x1, y1 = box
+    wide = x1 - x0 >= 700
+    stale = st.stale(now)
+    d.rounded_rectangle(box, radius=14, outline=BLACK, width=3)
+    _text(d, (x0 + 22, y0 + 16), st.name, 34, bold=True)
+    if stale:
+        msg = f"NO DATA SINCE {st.latest_time.astimezone(tz):%H:%M}" if st.latest_time else "NO DATA"
+        f = font(24, True)
+        tw = d.textlength(msg, font=f)
+        d.rounded_rectangle((x1 - 22 - tw - 24, y0 + 14, x1 - 22, y0 + 54), radius=10, fill=BLACK)
+        d.text((x1 - 22 - tw / 2 - 12, y0 + 34), msg, font=f, fill=WHITE, anchor="mm")
+    else:
+        arrow = {"CHARGING": "\u25b2", "DISCHARGING": "\u25bc"}.get(st.state, "\u25cf")
+        _text(d, (x1 - 22, y0 + 20), f"{arrow} {st.state}", 28, bold=True, anchor="ra")
+
+    # battery: percent, gauge, time to empty or full
+    lx1 = (x0 + x1) // 2 - 10 if wide else x1
+    pct = st.percent
+    _value_unit(d, x0 + 22, y0 + 176, fmt_num(pct, 0), "%", 120, 60)
+    bx0, by0, bx1, by1 = x0 + 22, y0 + 194, lx1 - 40, y0 + 226
+    d.rectangle((bx0, by0, bx1, by1), outline=BLACK, width=3)
+    d.rectangle((bx1, by0 + 9, bx1 + 10, by1 - 9), fill=BLACK)
+    if pct is not None:
+        d.rectangle((bx0 + 5, by0 + 5, bx0 + 5 + (bx1 - bx0 - 10) * max(0.0, min(pct, 100.0)) / 100, by1 - 5), fill=INK)
+    charging = st.state == "CHARGING"
+    left = None if stale else st.time_left()
+    label = "Full in" if charging else "Time left"
+    if charging and pct is not None and pct >= 99.5:
+        label, value = "Battery", "Full"
+    else:
+        value = f"\u2248 {fmt_duration(left)}" if left else "--"
+    _text(d, (x0 + 22, y0 + 284), label, 30, fill=DARK, anchor="ls")
+    _text(d, (lx1 - 22, y0 + 284), value, 34, bold=True, anchor="rs")
+
+    # power in and out, then each side's AC and DC
+    fx0, fy = (lx1 + 20, y0 + 84) if wide else (x0 + 22, y0 + 320)
+    bw = (x1 - 22 - fx0 - GAP) // 2
+    blocks = (
+        ("IN", st.power_in, (("AC", "ac_input_power", None), ("DC", "dc_input_power", None))),
+        ("OUT", st.power_out, (("AC", "ac_output_power", "ctrl_ac"), ("DC", "dc_output_power", "ctrl_dc"))),
+    )
+    for i, (title, total, rows) in enumerate(blocks):
+        bx = fx0 + i * (bw + GAP)
+        _text(d, (bx, fy), title, 26, bold=True, fill=DARK)
+        _value_unit(d, bx, fy + 84, fmt_num(total, 0), "W", 60, 32)
+        for r, (lab, key, switch) in enumerate(rows):
+            ry = fy + 128 + r * 40
+            off = switch is not None and st.latest.get(switch) is False  # the output is switched off
+            _text(d, (bx, ry), lab, 28, fill=DARK, anchor="ls")
+            _text(d, (bx + bw, ry), "OFF" if off else fmt_watts(st.watts(key)), 28, bold=True, anchor="rs")
+
+    today_in, today_out = st.today_in_wh, st.today_out_wh
+    if today_in is not None or today_out is not None:
+        kwh = lambda v: "--" if v is None else fmt_kwh(v / 1000)  # noqa: E731
+        _text(d, (x0 + 22, y1 - 20), f"Today: {kwh(today_in)} in \u00b7 {kwh(today_out)} out", 26, fill=DARK, anchor="ls")
+
+
+def _legend(d: ImageDraw.ImageDraw, right: int, baseline: int) -> None:
+    """'[fill] In  [line] Out', ending at `right`."""
+    x = right
+    x -= _text(d, (x, baseline), "Out", 26, bold=True, anchor="rs") + 10
+    d.rectangle((x - 34, baseline - 15, x, baseline - 10), fill=BLACK)
+    x -= 34 + 26
+    x -= _text(d, (x, baseline), "In", 26, bold=True, anchor="rs") + 10
+    d.rectangle((x - 34, baseline - 24, x, baseline), fill=LIGHT, outline=DARK, width=2)
+
+
+def render_bluetti(
+    snap: BluettiSnapshot | None, now: datetime, tz, layout: str = "portrait", kindle: KindleBattery | None = None, chart_hours: int = 24
+) -> Image.Image:
+    """A column per station: its card, power in/out and battery % over `chart_hours`."""
+    img = Image.new("L", size(layout), WHITE)
+    w, h = img.size
+    header(img, "bluetti", now.astimezone(tz), kindle)
+    d = ImageDraw.Draw(img)
+    stations = snap.stations if snap else []
+    if not stations:
+        _text(d, (w / 2, h / 2), "No Bluetti data (bluetti2influx)", 40, bold=True, anchor="mm")
+        return quantize(img)
+    top, bottom, n = HEADER_RULE_Y + 4 + GAP, h - 50, len(stations)
+    cw = (w - 2 * M - (n - 1) * GAP) // n
+    card_h = 360 if cw >= 700 else 546
+    rest = bottom - top - card_h - 2 * GAP
+    ph = int(rest * 0.55)
+    start, end = snap.fetched_at - timedelta(hours=chart_hours), snap.fetched_at
+    for i, st in enumerate(stations):
+        x0 = M + i * (cw + GAP)
+        x1, y = x0 + cw, top
+        _bluetti_card(d, (x0, y, x1, y + card_h), st, now, tz)
+        y += card_h + GAP
+        _text(d, (x0, y + 30), f"POWER (W), {chart_hours} h", 30, bold=True, anchor="ls")
+        _legend(d, x1, y + 30)
+        img.paste(bluetti_power_chart(st.watts_in, st.watts_out, tz, start, end, cw, ph - 44), (x0, y + 44))
+        y += ph + GAP
+        _text(d, (x0, y + 30), f"BATTERY (%), {chart_hours} h", 30, bold=True, anchor="ls")
+        img.paste(percent_chart(st.soc, tz, start, end, cw, bottom - y - 44), (x0, y + 44))
+    newest = snap.latest_time.astimezone(tz).strftime("%H:%M:%S") if snap.latest_time else "--"
+    _text(d, (w - M, h - 16), f"Bluetti via InfluxDB  \u00b7  newest sample {newest}", 22, fill=DARK, anchor="rs")
     return quantize(img)
 
 
