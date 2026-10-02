@@ -1,13 +1,16 @@
 # Edit this file on the Kindle drive: kindledash/config.sh (/mnt/us/kindledash/config.sh)
 
-# Dashboard URL (the Pi's LAN address, port from docker-compose.yml)
-#   portrait:  http://192.168.113.186:8765/portrait.png    with ROTATE=0
-#   landscape: http://192.168.113.186:8765/landscape.png   with ROTATE=90 or 270
-#     ROTATE=90  -> Kindle turned counter-clockwise (power button on the right)
-#     ROTATE=270 -> Kindle turned clockwise (power button on the left)
-#     (if the image comes out upside down, use the other one)
-URL="http://192.168.113.186:8765/portrait.png"
-ROTATE=0
+# The Pi's LAN address and port (from docker-compose.yml)
+SERVER="http://192.168.113.186:8765"
+# Orientations to cycle through. A 2 s touch-and-hold (or the Rotate button at
+# $SERVER/rotate) moves to the next one; the current one is remembered in
+# kindledash/rotation on the USB drive.
+#   0   portrait, upright
+#   90  landscape, Kindle turned counter-clockwise (power button on the right)
+#   180 portrait, upside down
+#   270 landscape, Kindle turned clockwise (power button on the left)
+# (if landscape comes out upside down, use the other of 90/270)
+ROTATIONS="0 90"
 # Seconds between polls (the server re-renders every 30 s)
 INTERVAL=60
 # Full flashing refresh every N redraws to clear ghosting
@@ -24,3 +27,15 @@ MAX_TIME=30
 POWER_BUTTON=1
 DOUBLE_PRESS_MS=1500
 BUTTON_DEV=/dev/input/event0
+# Touch-and-hold anywhere for TOUCH_HOLD_MS (then let go) to rotate.
+# Holds longer than TOUCH_MAX_MS are ignored (something resting on the screen).
+TOUCH_ROTATE=1
+TOUCH_HOLD_MS=2000
+TOUCH_MAX_MS=8000
+TOUCH_DEV=/dev/input/event1
+# Limit the hold to one area, in raw touch coordinates: "xmin ymin xmax ymax".
+# Empty = anywhere. The first touches of each run are logged with their
+# coordinates ("touch down x=... y=...") so you can find a corner.
+TOUCH_AREA=""
+# 1 = also rotate when the Rotate button at $SERVER/rotate is pressed
+REMOTE_ROTATE=1

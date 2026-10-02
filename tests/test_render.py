@@ -104,3 +104,14 @@ def test_endpoints_serve_cached_png_and_go_stale():
         status = client.get("/status").json()
         assert status["stale_since"] == status["last_success"]
         assert "influx down" in status["last_error"]
+
+
+def test_rotate_requests():
+    app = create_app(Settings(tz="America/Los_Angeles"), fetch=lambda: None, poll=False)
+    with TestClient(app) as client:
+        assert client.get("/rotate/count").text == "0"
+        assert "<form" in client.get("/rotate").text
+        r = client.post("/rotate", follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"] == "/rotate?sent=1"
+        assert client.get("/rotate/count").text == "1"
+        assert "Requested" in client.get("/rotate?sent=1").text

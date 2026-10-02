@@ -66,6 +66,7 @@ Open `http://<pi>:8765/dashboard.png` in a browser to check it.
 |---|---|
 | `GET /portrait.png[?rotate=0\|90\|180\|270]` | Latest 1236×1648 portrait render, served from memory. Sends an `ETag` and supports `If-None-Match` (returns 304). `/dashboard.png` is an alias. |
 | `GET /landscape.png[?rotate=…]` | 1648×1236 landscape layout. The Kindle panel is physically portrait, so the client requests it with `rotate=90` or `270`. |
+| `GET /rotate` | Phone-friendly page with a **Rotate Kindle 90°** button. Pressing it (`POST /rotate`) bumps a counter. The Kindle polls `GET /rotate/count` and rotates once each time the counter goes up. |
 | `GET /status` | Current values as JSON, plus `last_success`, `stale_since` and `last_error` |
 | `GET /health` | 200 if the last successful render is under 3 minutes old, otherwise 503. The Docker `HEALTHCHECK` uses it. |
 
@@ -89,7 +90,7 @@ ships with current jailbreaks. KUAL is obsolete on this firmware. Any `.sh` file
 ```
 kindle/
   kindledash/            -> Kindle drive: kindledash/      (/mnt/us/kindledash)
-    config.sh               URL, rotation, interval, ...
+    config.sh               server, rotations, interval, ...
     kindledash.sh           the loop
   documents/             -> Kindle drive: documents/       (/mnt/us/documents)
     Solar Dashboard - Start.sh
@@ -115,9 +116,7 @@ cp -X ~/kindleDash/kindle/documents/*.sh /Volumes/Kindle/documents/
 dot_clean /Volumes/Kindle
 ```
 
-1. Check `URL` and `ROTATE` in `/Volumes/Kindle/kindledash/config.sh`.
-   - **Portrait:** `http://<pi-ip>:8765/portrait.png` with `ROTATE=0`.
-   - **Landscape:** `http://<pi-ip>:8765/landscape.png` with `ROTATE=90` if the Kindle is turned counter-clockwise (power button on the right), or `ROTATE=270` if it's turned clockwise (power button on the left). If the image comes out upside down, use the other value.
+1. Check `SERVER` and `ROTATIONS` in `/Volumes/Kindle/kindledash/config.sh` (see [Rotating](#rotating)).
 2. Eject. The three **Solar Dashboard** entries appear in the library.
 3. Tap **Solar Dashboard - Log** first. It shows whether FBInk was found; the hotfix normally installs it at `/mnt/us/libkh/bin/fbink`.
 4. Tap **Solar Dashboard - Start**.
@@ -134,6 +133,30 @@ While the dashboard runs, the loop reads the power key directly (`/dev/input/eve
 On this Kindle (PW11, `bd71828-pwrkey`), the power-management chip only reports "pushed", with press and release at the same instant. How long the button is held can't be measured, which is why this uses press counting rather than a long press.
 **Don't hold the button down:** a hold of 15 s or more forces a hardware restart.
 Every press is logged and the log is saved to disk right away. Set `POWER_BUTTON=0` or change `DOUBLE_PRESS_MS` in `config.sh`.
+
+### Rotating
+
+`ROTATIONS` in `config.sh` lists the orientations to cycle through. The default is `"0 90"`:
+
+| Value | Layout | Kindle held |
+|---|---|---|
+| `0` | portrait | upright |
+| `90` | landscape | turned counter-clockwise (power button on the right) |
+| `180` | portrait | upside down |
+| `270` | landscape | turned clockwise (power button on the left) |
+
+To switch to the next orientation, do either of these:
+
+- **Touch and hold the screen for 2 s, then let go.** Taps and holds longer than 8 s are ignored. The hold is measured when you lift your finger.
+- **Press Rotate at `http://<pi-ip>:8765/rotate`**, for example from a phone. The Kindle picks this up at its next poll, within `INTERVAL`.
+
+The Kindle shows "Rotating...", fetches the other layout and does a full refresh.
+The current orientation is saved in `kindledash/rotation`, so it survives restarts. Delete that file to go back to the first entry in `ROTATIONS`.
+If landscape comes out upside down, replace `90` with `270` in `ROTATIONS`.
+
+The first 20 touches of each run are logged with their raw coordinates, for example `touch 2100ms down x=... y=...`.
+The touch panel's axes don't necessarily match the screen's. To accept the hold only in one area, such as a corner, touch that corner a few times, read the coordinates from the log, and set `TOUCH_AREA="xmin ymin xmax ymax"`.
+`TOUCH_ROTATE=0` or `REMOTE_ROTATE=0` turns either trigger off.
 
 ### Stopping it
 

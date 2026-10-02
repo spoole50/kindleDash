@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from PIL import Image
 
 from . import render
@@ -37,6 +37,8 @@ class State:
         self.stale_since: datetime | None = None
         self.last_error: str | None = None
         self._png: dict[tuple[str, int], tuple[bytes, str]] = {}
+        # bumped by POST /rotate; the Kindle polls it and rotates once per increase
+        self.rotate_requests = 0
 
     @staticmethod
     def now() -> datetime:
@@ -137,6 +139,23 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
         """1648 x 1236 landscape layout; on the Kindle use ?rotate=90 or 270."""
         return serve(request, "landscape", rotate)
 
+    @app.get("/rotate", response_class=HTMLResponse)
+    def rotate_page(sent: int = 0):
+        """Phone-friendly page with a button that asks the Kindle to rotate."""
+        note = "<p>Requested. The Kindle rotates at its next check (within a minute).</p>" if sent else ""
+        return ROTATE_PAGE.format(note=note)
+
+    @app.post("/rotate")
+    def rotate_request():
+        state.rotate_requests += 1
+        log.info("rotate requested (count %d)", state.rotate_requests)
+        return RedirectResponse("/rotate?sent=1", status_code=303)
+
+    @app.get("/rotate/count", response_class=PlainTextResponse)
+    def rotate_count():
+        """Polled by the Kindle; it rotates once each time this goes up."""
+        return str(state.rotate_requests)
+
     @app.get("/status")
     def status():
         iso = lambda t: t.isoformat() if t else None  # noqa: E731
@@ -155,6 +174,17 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
         return JSONResponse({"ok": ok, "render_age_s": age}, status_code=200 if ok else 503)
 
     return app
+
+
+ROTATE_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rotate Kindle</title>
+<style>body{{font-family:system-ui,sans-serif;margin:2rem 1rem;text-align:center}}
+button{{font-size:1.4rem;padding:1rem 2rem;border-radius:.6rem}}</style></head>
+<body><h1>Solar dashboard</h1>
+<form method="post" action="/rotate"><button type="submit">Rotate Kindle 90&deg;</button></form>
+{note}</body></html>
+"""
 
 
 def main() -> None:
