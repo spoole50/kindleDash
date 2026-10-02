@@ -14,8 +14,9 @@ STOP_FRAMEWORK=1
 # curl timeouts (seconds)
 CONNECT_TIMEOUT=10
 MAX_TIME=30
-# Power button: short press toggles the backlight, hold >= LONG_PRESS_MS
-# returns to the library (well under the ~9 s hold that triggers a restart).
+# Power button: tap (< 1 s) toggles the backlight; holding for LONG_PRESS_S
+# seconds returns to the library as soon as that time is reached (no need to
+# release). Keep it short: a long hold starts the Kindle's own power-off.
 POWER_BUTTON=1
-LONG_PRESS_MS=2000
+LONG_PRESS_S=2
 BUTTON_DEV=/dev/input/event0

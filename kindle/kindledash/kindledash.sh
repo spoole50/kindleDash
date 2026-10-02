@@ -48,30 +48,35 @@ reconnect_wifi() {
 # Power button (event0 = bd71828-pwrkey). Reads raw input events through one
 # persistent fd so none are missed; on this 32-bit kernel each event is 16 bytes:
 # tv_sec, tv_usec, type | code << 16, value (1 = down, 0 = up).
-# Short press -> toggle backlight; hold >= LONG_PRESS_MS -> back to the library.
+# Tap (< 1 s) -> toggle backlight. Holding for LONG_PRESS_S fires *while still
+# held*, so there's feedback long before the Kindle's own power-off hold.
 KEY_POWER_WORD=$((1 + 116 * 65536))  # EV_KEY, KEY_POWER
 button_watcher() {
     exec 3< "$BUTTON_DEV" || { log "cannot open $BUTTON_DEV"; return; }
-    down_s=""; down_us=""
+    down_s=""; down_us=""; timer=""
     while :; do
         set -- $(dd bs=16 count=1 <&3 2>/dev/null | od -An -tu4 -v)
         [ $# -eq 4 ] || { sleep 1; continue; }
         [ "$3" = "$KEY_POWER_WORD" ] || continue
         if [ "$4" = "1" ]; then
             down_s=$1; down_us=$2
+            ( sleep "$LONG_PRESS_S"
+              "$FBINK" -q -c -f -m -y 10 "Returning to the library... (you can let go)" 2>/dev/null
+              log "power held ${LONG_PRESS_S}s -> exit to library"; sync
+              kill -USR1 "$MAIN_PID" ) &
+            timer=$!
         elif [ "$4" = "0" ] && [ -n "$down_s" ]; then
+            [ -n "$timer" ] && kill "$timer" 2>/dev/null
+            timer=""
             ms=$(( ($1 - down_s) * 1000 + ($2 - down_us) / 1000 ))
             down_s=""
-            if [ $ms -ge "$LONG_PRESS_MS" ]; then
-                log "power held ${ms}ms -> exit to library"
-                kill -USR1 "$MAIN_PID"
-                return
-            elif [ $ms -lt 1000 ]; then
+            if [ $ms -lt 1000 ]; then
                 log "power pressed ${ms}ms -> backlight"
                 backlight_toggle
-            else
+            elif [ $ms -lt $((LONG_PRESS_S * 1000)) ]; then
                 log "power held ${ms}ms -> ignored"
             fi
+            sync  # a forced restart would otherwise lose these lines
         fi
     done
 }
@@ -86,11 +91,9 @@ WATCHER=""
 shutdown() {
     [ -n "$WATCHER" ] && kill "$WATCHER" 2>/dev/null
     rm -f "$STATE/pid"
-    if [ "$1" = "library" ]; then
-        "$FBINK" -q -c -f -m -y 10 "Returning to the library..." 2>/dev/null
-        restore_ui
-    fi
+    [ "$1" = "library" ] && restore_ui
     log "stopped ($1)"
+    sync
     exit 0
 }
 trap 'shutdown library' USR1

@@ -122,9 +122,9 @@ The log is at `/mnt/us/kindledash/kindledash.log`.
 While the dashboard runs, the loop reads the power key directly (`/dev/input/event0`):
 
 - **quick press**: toggles the backlight on or off, remembering the previous level
-- **hold for 2 s or more**: returns to the library. It restarts the Kindle UI and opens Home, which can take up to about a minute.
+- **hold for 2 s**: returns to the library as soon as 2 s is reached (no need to let go). It restarts the Kindle UI and opens Home, which can take up to about a minute.
 
-Every press is logged with its duration. Set `POWER_BUTTON=0` or change `LONG_PRESS_MS` in `config.sh`.
+Every press is logged with its duration, and the log is saved to disk right away. Set `POWER_BUTTON=0` or change `LONG_PRESS_S` in `config.sh`.
 Don't hold the button for 9 s or more: that's the Kindle's own restart.
 
 ### Stopping it
