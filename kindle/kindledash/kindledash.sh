@@ -14,7 +14,11 @@ FBINK="$(find_fbink)"
 SYSLOG_COPY=/mnt/us/kindledash/messages.log
 save_syslog() {
     { echo "=== $(date '+%F %T') uptime: $(cut -d' ' -f1 /proc/uptime)s"
-      tail -n 300 /var/log/messages 2>/dev/null || logread 2>/dev/null | tail -n 300
+      if [ -s /var/log/messages ]; then tail -n 300 /var/log/messages
+      elif command -v logread >/dev/null 2>&1; then logread 2>/dev/null | tail -n 300
+      fi
+      echo "--- dmesg"
+      dmesg 2>/dev/null | tail -n 100
     } > "$SYSLOG_COPY.tmp" && mv "$SYSLOG_COPY.tmp" "$SYSLOG_COPY"
 }
 
@@ -101,6 +105,7 @@ fi
 "$FBINK" -q -c -f 2>/dev/null
 log "started: $FULL_URL (fbink: $FBINK) uptime=$(cut -d' ' -f1 /proc/uptime)s"
 [ -f "$SYSLOG_COPY" ] && mv "$SYSLOG_COPY" "$SYSLOG_COPY.prev"  # what preceded the last reboot
+log "syslog candidates: $(ls -la /var/log 2>&1 | tr '\n' ' ' | cut -c1-600)"
 if [ "$POWER_BUTTON" = "1" ] && [ -r "$BUTTON_DEV" ]; then
     button_watcher &
     WATCHER=$!
