@@ -66,6 +66,7 @@ Open `http://<pi>:8765/dashboard.png` in a browser to check it.
 |---|---|
 | `GET /portrait.png[?rotate=0\|90\|180\|270]` | Latest 1236×1648 portrait render, served from memory. Sends an `ETag` and supports `If-None-Match` (returns 304). `/dashboard.png` is an alias. |
 | `GET /landscape.png[?rotate=…]` | 1648×1236 landscape layout. The Kindle panel is physically portrait, so the client requests it with `rotate=90` or `270`. |
+| `…&battery=<0-100>&charging=<0\|1>` | Optional on either image. The Kindle client sends its own battery this way, and the next render shows "Kindle [battery icon] 85%" in the header, next to the date. Low battery (under 20% and not charging) is drawn bold black. The indicator disappears if no report has arrived for 15 minutes. Malformed values are ignored. |
 | `GET /rotate` | Phone-friendly page with a **Rotate Kindle 90°** button. Pressing it (`POST /rotate`) bumps a counter. The Kindle polls `GET /rotate/count` and rotates once each time the counter goes up. |
 | `GET /status` | Current values as JSON, plus `last_success`, `stale_since` and `last_error` |
 | `GET /health` | 200 if the last successful render is under 3 minutes old, otherwise 503. The Docker `HEALTHCHECK` uses it. |
@@ -103,7 +104,8 @@ The loop:
 1. sets `preventScreenSaver 1` and stops the Kindle UI (`stop lab126_gui`, falling back to `stop framework`) so the UI can't draw over the dashboard
 2. every `INTERVAL` seconds, `curl`s the PNG with connect and total timeouts
 3. if the image's md5 changed, draws it with FBInk using a partial refresh, with a full flashing refresh every `FULL_REFRESH_EVERY` (15) draws to clear ghosting
-4. if a fetch fails, leaves the last image up, draws a small inverted "! offline since HH:MM" marker in the bottom-left corner, and toggles Wi-Fi via `lipc` to reconnect. The next successful fetch does a full redraw that removes the marker.
+4. sends its own battery level and charging state (`lipc-get-prop com.lab126.powerd battLevel` / `isCharging`) with each fetch, for the header indicator
+5. if a fetch fails, leaves the last image up, draws a small inverted "! offline since HH:MM" marker in the bottom-left corner, and toggles Wi-Fi via `lipc` to reconnect. The next successful fetch does a full redraw that removes the marker.
 
 ### Install (from a Mac)
 

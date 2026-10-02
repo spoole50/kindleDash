@@ -153,6 +153,18 @@ touch_watcher() {
     done
 }
 
+# The Kindle's own battery, sent with each fetch so the server can show it in
+# the header. Sets BATTERY_QS to "&battery=<0-100>&charging=<0|1>", or to
+# nothing if the level is unreadable.
+read_battery() {
+    BATTERY_QS=""
+    bat="$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)"
+    chg="$(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null)"
+    case "$bat" in ''|*[!0-9]*) bat=""; return ;; esac
+    case "$chg" in 1) ;; *) chg=0 ;; esac
+    BATTERY_QS="&battery=$bat&charging=$chg"
+}
+
 # Small inverted label drawn over the last image, on panel row MARKER_ROW.
 error_marker() {
     "$FBINK" -q -h -x 0 -y "$MARKER_ROW" " ! offline since $1 " 2>/dev/null
@@ -211,7 +223,8 @@ while true; do
         last_sum=""  # full redraw of the new layout
         draws=0
     fi
-    if curl -s -f --connect-timeout "$CONNECT_TIMEOUT" -m "$MAX_TIME" -o "$TMP" "$FULL_URL"; then
+    read_battery
+    if curl -s -f --connect-timeout "$CONNECT_TIMEOUT" -m "$MAX_TIME" -o "$TMP" "$FULL_URL$BATTERY_QS"; then
         sum="$(md5sum "$TMP" | cut -d' ' -f1)"
         if [ "$sum" != "$last_sum" ]; then
             mv "$TMP" "$PNG"
@@ -223,7 +236,7 @@ while true; do
                 "$FBINK" -q -g file="$PNG" 2>>"$LOG"         # partial refresh
             fi
             last_sum="$sum"
-            log "drew (draws=$draws) uptime=$(cut -d' ' -f1 /proc/uptime)s powerd=$(lipc-get-prop com.lab126.powerd state 2>/dev/null)"
+            log "drew (draws=$draws) battery=${bat:-?}% charging=${chg:-?} uptime=$(cut -d' ' -f1 /proc/uptime)s powerd=$(lipc-get-prop com.lab126.powerd state 2>/dev/null)"
         fi
         [ -n "$fail_since" ] && log "recovered"
         fail_since=""

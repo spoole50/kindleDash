@@ -115,3 +115,26 @@ def test_rotate_requests():
         assert r.status_code == 303 and r.headers["location"] == "/rotate?sent=1"
         assert client.get("/rotate/count").text == "1"
         assert "Requested" in client.get("/rotate?sent=1").text
+
+
+def test_kindle_battery_report_reaches_header_and_status():
+    snap = sample_snapshot(NOW, TZ)
+    app = create_app(Settings(tz="America/Los_Angeles"), fetch=lambda: snap, poll=False)
+    state = app.state.dash
+    with TestClient(app) as client:
+        state.update(lambda: snap)
+        plain = state.images["portrait"]
+        assert client.get("/status").json()["kindle"] is None
+        # malformed reports are ignored, never break the image
+        assert client.get("/portrait.png?rotate=0&battery=&charging=").status_code == 200
+        assert client.get("/portrait.png?battery=abc").status_code == 200
+        assert state.kindle is None
+        assert client.get("/landscape.png?rotate=270&battery=64&charging=1").status_code == 200
+        assert client.get("/status").json()["kindle"]["level"] == 64
+        state.update(lambda: snap)
+        assert state.images["portrait"].tobytes() != plain.tobytes()
+        # header only: the rest of the image is unchanged
+        assert state.images["portrait"].crop((0, 130, 1236, 1648)).tobytes() == plain.crop((0, 130, 1236, 1648)).tobytes()
+        state.kindle_at = datetime(2020, 1, 1, tzinfo=timezone.utc)  # long ago -> hidden again
+        state.update(lambda: snap)
+        assert state.images["portrait"].tobytes() == plain.tobytes()

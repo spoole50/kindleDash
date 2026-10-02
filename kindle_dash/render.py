@@ -12,6 +12,7 @@ import math
 import os
 from datetime import datetime, timedelta
 from functools import lru_cache
+from typing import NamedTuple
 
 import matplotlib
 
@@ -289,9 +290,20 @@ def daily_chart(days, today, w, h) -> Image.Image:
 # Each section draws into a box (x0, y0, x1, y1), so both layouts share them.
 
 
+class KindleBattery(NamedTuple):
+    """The display's own battery, as reported by the Kindle client."""
+
+    level: int  # percent
+    charging: bool
+
+
+LOW_KINDLE_BATTERY = 20
+
+
 class _Ctx:
-    def __init__(self, img, snap: Snapshot, tz, chart_hours: int, spark_hours: int):
+    def __init__(self, img, snap: Snapshot, tz, chart_hours: int, spark_hours: int, kindle: KindleBattery | None = None):
         self.img, self.d, self.snap, self.tz = img, ImageDraw.Draw(img), snap, tz
+        self.kindle = kindle
         self.chart_hours, self.spark_hours = chart_hours, spark_hours
         self.now = snap.fetched_at.astimezone(tz)
         self.spark_since = snap.fetched_at - timedelta(hours=spark_hours)
@@ -305,10 +317,38 @@ def _header(c: _Ctx) -> int:
     y = 26
     _text(c.d, (M, y + 70), "SOLAR", 64, bold=True, anchor="ls")
     _text(c.d, (w - M, y + 44), f"Updated {c.now:%H:%M}", 40, bold=True, anchor="rs")
-    _text(c.d, (w - M, y + 80), f"{c.now:%a %-d %b}", 28, fill=DARK, anchor="rs")
+    date = f"{c.now:%a %-d %b}"
+    _text(c.d, (w - M, y + 80), date, 28, fill=DARK, anchor="rs")
+    if c.kindle:
+        _kindle_battery(c.d, w - M - c.d.textlength(date, font=font(28)) - 28, y + 80, c.kindle)
     y += 100
     c.d.rectangle((M, y, w - M, y + 4), fill=BLACK)
     return y + 4 + GAP
+
+
+def _kindle_battery(d: ImageDraw.ImageDraw, right: float, baseline: float, kb: KindleBattery) -> None:
+    """'Kindle [icon] 85%' ending at `right`; bold black when low and not charging."""
+    low = kb.level < LOW_KINDLE_BATTERY and not kb.charging
+    fill, size = (BLACK, 28) if low else (DARK, 24)
+    pct = f"{kb.level}%"
+    tw = d.textlength(pct, font=font(size, low))
+    _text(d, (right, baseline), pct, size, bold=low, fill=fill, anchor="rs")
+    # icon: body + nub, filled to the level; a bolt while charging
+    bw, bh = 44, 22
+    x1 = right - tw - 10 - 4
+    x0, y1 = x1 - bw, baseline - 1
+    y0 = y1 - bh
+    d.rectangle((x1, y0 + 6, x1 + 4, y1 - 6), fill=fill)
+    d.rectangle((x0, y0, x1, y1), outline=fill, width=3)
+    inner = bw - 10
+    fw = round(inner * max(0, min(kb.level, 100)) / 100)
+    if fw:
+        d.rectangle((x0 + 5, y0 + 5, x0 + 5 + fw, y1 - 5), fill=fill)
+    if kb.charging:
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        bolt = [(cx + 3, y0 - 3), (cx - 9, cy + 2), (cx - 1, cy + 2), (cx - 4, y1 + 3), (cx + 9, cy - 2), (cx + 1, cy - 2)]
+        d.polygon(bolt, fill=WHITE, outline=BLACK, width=2)
+    _text(d, (x0 - 10, baseline), "Kindle", size, bold=low, fill=fill, anchor="rs")
 
 
 def _footer(c: _Ctx) -> None:
@@ -419,15 +459,17 @@ def _daily_section(c: _Ctx, box) -> None:
 LAYOUTS = ("portrait", "landscape")
 
 
-def render(snap: Snapshot, tz, chart_hours: int = 24, spark_hours: int = 6, layout: str = "portrait") -> Image.Image:
+def render(
+    snap: Snapshot, tz, chart_hours: int = 24, spark_hours: int = 6, layout: str = "portrait", kindle: KindleBattery | None = None
+) -> Image.Image:
     if layout == "landscape":
-        return render_landscape(snap, tz, chart_hours, spark_hours)
-    return render_portrait(snap, tz, chart_hours, spark_hours)
+        return render_landscape(snap, tz, chart_hours, spark_hours, kindle)
+    return render_portrait(snap, tz, chart_hours, spark_hours, kindle)
 
 
-def render_portrait(snap: Snapshot, tz, chart_hours: int = 24, spark_hours: int = 6) -> Image.Image:
+def render_portrait(snap: Snapshot, tz, chart_hours: int = 24, spark_hours: int = 6, kindle: KindleBattery | None = None) -> Image.Image:
     """1236 x 1648: hero row, stat tiles, two 24 h charts, today + per-day bars."""
-    c = _Ctx(Image.new("L", (W, H), WHITE), snap, tz, chart_hours, spark_hours)
+    c = _Ctx(Image.new("L", (W, H), WHITE), snap, tz, chart_hours, spark_hours, kindle)
     y = _header(c)
     half = (W - 2 * M - GAP) // 2
     _battery_tile(c, (M, y, M + half, y + 256))
@@ -446,10 +488,10 @@ def render_portrait(snap: Snapshot, tz, chart_hours: int = 24, spark_hours: int 
     return quantize(c.img)
 
 
-def render_landscape(snap: Snapshot, tz, chart_hours: int = 24, spark_hours: int = 6) -> Image.Image:
+def render_landscape(snap: Snapshot, tz, chart_hours: int = 24, spark_hours: int = 6, kindle: KindleBattery | None = None) -> Image.Image:
     """1648 x 1236: battery + today down the left, stats and charts on the right."""
     w, h = H, W
-    c = _Ctx(Image.new("L", (w, h), WHITE), snap, tz, chart_hours, spark_hours)
+    c = _Ctx(Image.new("L", (w, h), WHITE), snap, tz, chart_hours, spark_hours, kindle)
     y0 = _header(c)
     bottom, lw = h - 50, 520
     rx = M + lw + GAP

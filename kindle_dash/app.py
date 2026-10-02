@@ -19,6 +19,8 @@ from .data import Snapshot
 
 log = logging.getLogger("kindle_dash")
 
+KINDLE_REPORT_MAX_AGE_S = 15 * 60  # hide the Kindle's battery after this long without a report
+
 
 class State:
     """Last good render plus everything /status and /health need."""
@@ -39,6 +41,9 @@ class State:
         self._png: dict[tuple[str, int], tuple[bytes, str]] = {}
         # bumped by POST /rotate; the Kindle polls it and rotates once per increase
         self.rotate_requests = 0
+        # the display's own battery, sent as query params on its image fetches
+        self.kindle: render.KindleBattery | None = None
+        self.kindle_at: datetime | None = None
 
     @staticmethod
     def now() -> datetime:
@@ -49,12 +54,29 @@ class State:
             self.images = images
             self._png = {}
 
+    def report_kindle(self, battery: str | None, charging: str | None) -> None:
+        """Record a battery report; malformed values are ignored so the image is still served."""
+        try:
+            level = int(battery)
+        except (TypeError, ValueError):
+            return
+        if 0 <= level <= 100:
+            self.kindle = render.KindleBattery(level, charging in ("1", "true", "yes"))
+            self.kindle_at = self.now()
+
+    def kindle_battery(self) -> render.KindleBattery | None:
+        """The last report, if the Kindle has fetched recently."""
+        if self.kindle_at and (self.now() - self.kindle_at).total_seconds() < KINDLE_REPORT_MAX_AGE_S:
+            return self.kindle
+        return None
+
     def update(self, fetch) -> None:
         """One poll cycle. `fetch` returns a Snapshot or raises."""
         try:
             snap = fetch()
+            kindle = self.kindle_battery()
             imgs = {
-                lay: render.render(snap, self.s.zone, self.s.chart_hours, self.s.spark_hours, layout=lay)
+                lay: render.render(snap, self.s.zone, self.s.chart_hours, self.s.spark_hours, layout=lay, kindle=kindle)
                 for lay in render.LAYOUTS
             }
         except Exception as exc:  # keep serving the last good image
@@ -122,6 +144,7 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
     def serve(request: Request, layout: str, rotate: int) -> Response:
         if rotate not in (0, 90, 180, 270):
             raise HTTPException(400, "rotate must be 0, 90, 180 or 270")
+        state.report_kindle(request.query_params.get("battery"), request.query_params.get("charging"))
         data, etag = state.png(layout, rotate)
         headers = {"ETag": etag, "Cache-Control": "no-cache"}
         if request.headers.get("if-none-match") == etag:
@@ -131,7 +154,10 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
     @app.get("/dashboard.png")
     @app.get("/portrait.png")
     def portrait(request: Request, rotate: int = Query(0)):
-        """1236 x 1648 portrait layout (the Kindle's native orientation)."""
+        """1236 x 1648 portrait layout (the Kindle's native orientation).
+
+        The Kindle client adds ?battery=<0-100>&charging=<0|1>; the next render shows it in the header.
+        """
         return serve(request, "portrait", rotate)
 
     @app.get("/landscape.png")
@@ -165,6 +191,7 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
             "stale_since": iso(state.stale_since),
             "last_error": state.last_error,
             "healthy": state.healthy(),
+            "kindle": {**state.kindle._asdict(), "reported_at": iso(state.kindle_at)} if state.kindle else None,
         }
 
     @app.get("/health")
