@@ -72,6 +72,10 @@ from Protect's integration API (Protect 5+); older versions give 640×360 ones. 
 self-signed certificate isn't verified, so keep this on the LAN. HomeKit-only cameras
 (e.g. Logitech Circle View) can't be shown: Apple Home doesn't share their stills.
 
+If the picture shows as a photo negative on the Kindle (only the picture; text and charts
+look normal), turn off **Dark Mode** in the Kindle's settings. Its display hardware keeps
+inverting photo-like areas even while the dashboard runs instead of the Kindle UI.
+
 ### Health
 
 Every page's header turns the date into a black **⚠ N ISSUES** badge while something
