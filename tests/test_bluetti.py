@@ -116,3 +116,14 @@ def test_bluetti_settings(monkeypatch):
     assert Settings.from_env().bluetti_stations == STATIONS
     monkeypatch.setenv("BLUETTI_STATIONS", "AC180=1152, AP300=5529.6 ,EB3A")
     assert Settings.from_env().bluetti_stations == (("AC180", 1152.0), ("AP300", 5529.6), ("EB3A", None))
+
+
+def test_big_numbers_switch_to_kw_and_render_at_any_size():
+    assert render._watts_parts(352.4) == ("352", "W") and render._watts_parts(1840.0) == ("1.84", "kW")
+    assert render._watts_parts(None) == ("--", "W")
+    snap = sample_bluetti(NOW, TZ)
+    for st in snap.stations:
+        st.latest.update(total_battery_percent=100.0, ac_input_power=9999.0, dc_input_power=9999.0, ac_output_power=9999.0, dc_output_power=9999.0)
+        st.today_wh = {"dc_input_power": 99999.0, "ac_output_power": 99999.0}
+    for layout in render.LAYOUTS:
+        assert render.render_bluetti(snap, NOW, TZ, layout).size == render.size(layout)

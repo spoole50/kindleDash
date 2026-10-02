@@ -856,10 +856,34 @@ def percent_chart(pts: list[Point], tz, start, end, w, h) -> Image.Image:
     return _to_image(fig)
 
 
+def _shrink(d: ImageDraw.ImageDraw, parts, width: float, bold: bool = True) -> float:
+    """The scale (<= 1) at which text `parts` [(s, size)] fit in `width`."""
+    total = sum(d.textlength(s, font=font(size, bold)) for s, size in parts) + 8 * (len(parts) - 1)
+    return min(1.0, width / total) if total else 1.0
+
+
+def _fitted_value(d, x, y, value, unit, vsize, usize, width, anchor="ls", fill=BLACK) -> float:
+    """_value_unit, scaled down until it fits in `width`."""
+    k = _shrink(d, ((value, vsize), (unit, usize)), width)
+    return _value_unit(d, x, y, value, unit, int(vsize * k), int(usize * k), anchor, fill)
+
+
+def _fitted_text(d, xy, s, size, width, bold=False, fill=BLACK, anchor="la") -> float:
+    return _text(d, xy, s, int(size * _shrink(d, ((s, size),), width, bold)), bold, fill, anchor)
+
+
+def _watts_parts(w: float | None) -> tuple[str, str]:
+    """('1.84', 'kW') or ('352', 'W') for a big number and its unit."""
+    if w is None:
+        return "--", "W"
+    return (f"{w / 1000:.2f}", "kW") if w >= 1000 else (f"{w:.0f}", "W")
+
+
 def _bluetti_card(d: ImageDraw.ImageDraw, box, st: Station, now: datetime, tz) -> None:
     """Name and state, battery %, time to empty or full, power in and out, and today's energy.
 
-    Wide boxes (landscape) put the flows beside the battery instead of under it.
+    Narrow boxes (portrait) put IN and OUT side by side under the battery; wide
+    ones (landscape) stack them beside it. Every number shrinks to fit its space.
     """
     x0, y0, x1, y1 = box
     wide = x1 - x0 >= 700
@@ -877,10 +901,11 @@ def _bluetti_card(d: ImageDraw.ImageDraw, box, st: Station, now: datetime, tz) -
         _text(d, (x1 - 22, y0 + 20), f"{arrow} {st.state}", 28, bold=True, anchor="ra")
 
     # battery: percent, gauge, time to empty or full
-    lx1 = (x0 + x1) // 2 - 10 if wide else x1
+    lx1 = x0 + (x1 - x0) * 9 // 20 if wide else x1
+    lw = lx1 - x0 - 44
     pct = st.percent
-    _value_unit(d, x0 + 22, y0 + 176, fmt_num(pct, 0), "%", 120, 60)
-    bx0, by0, bx1, by1 = x0 + 22, y0 + 194, lx1 - 40, y0 + 226
+    _fitted_value(d, x0 + 22, y0 + 176, fmt_num(pct, 0), "%", 120, 60, lw)
+    bx0, by0, bx1, by1 = x0 + 22, y0 + 194, lx1 - 32, y0 + 226
     d.rectangle((bx0, by0, bx1, by1), outline=BLACK, width=3)
     d.rectangle((bx1, by0 + 9, bx1 + 10, by1 - 9), fill=BLACK)
     if pct is not None:
@@ -892,30 +917,46 @@ def _bluetti_card(d: ImageDraw.ImageDraw, box, st: Station, now: datetime, tz) -
         label, value = "Battery", "Full"
     else:
         value = f"\u2248 {fmt_duration(left)}" if left else "--"
-    _text(d, (x0 + 22, y0 + 284), label, 30, fill=DARK, anchor="ls")
-    _text(d, (lx1 - 22, y0 + 284), value, 34, bold=True, anchor="rs")
+    used = _text(d, (x0 + 22, y0 + 284), label, 30, fill=DARK, anchor="ls")
+    _fitted_text(d, (lx1 - 22, y0 + 284), value, 34, lw - used - 16, bold=True, anchor="rs")
 
-    # power in and out, then each side's AC and DC
-    fx0, fy = (lx1 + 20, y0 + 84) if wide else (x0 + 22, y0 + 320)
-    bw = (x1 - 22 - fx0 - GAP) // 2
     blocks = (
         ("IN", st.power_in, (("AC", "ac_input_power", None), ("DC", "dc_input_power", None))),
         ("OUT", st.power_out, (("AC", "ac_output_power", "ctrl_ac"), ("DC", "dc_output_power", "ctrl_dc"))),
     )
-    for i, (title, total, rows) in enumerate(blocks):
-        bx = fx0 + i * (bw + GAP)
-        _text(d, (bx, fy), title, 26, bold=True, fill=DARK)
-        _value_unit(d, bx, fy + 84, fmt_num(total, 0), "W", 60, 32)
-        for r, (lab, key, switch) in enumerate(rows):
-            ry = fy + 128 + r * 40
-            off = switch is not None and st.latest.get(switch) is False  # the output is switched off
-            _text(d, (bx, ry), lab, 28, fill=DARK, anchor="ls")
-            _text(d, (bx + bw, ry), "OFF" if off else fmt_watts(st.watts(key)), 28, bold=True, anchor="rs")
+
+    def part(lab, key, switch):
+        off = switch is not None and st.latest.get(switch) is False  # the output is switched off
+        return lab, "OFF" if off else fmt_watts(st.watts(key))
+
+    if wide:
+        # stacked beside the battery: "IN   1.84 kW" over "AC 1.2 kW · DC 640 W"
+        fx0, fx1 = lx1 + 24, x1 - 22
+        for i, (title, total, rows) in enumerate(blocks):
+            by = y0 + 136 + i * 112
+            used = _text(d, (fx0, by), title, 30, bold=True, fill=DARK, anchor="ls")
+            _fitted_value(d, fx1, by, *_watts_parts(total), 56, 30, fx1 - fx0 - used - 20, anchor="rs")
+            sub = "  \u00b7  ".join(f"{lab} {val}" for lab, val in (part(*r) for r in rows))
+            _fitted_text(d, (fx1, by + 40), sub, 26, fx1 - fx0, fill=DARK, anchor="rs")
+    else:
+        # side by side under the battery: a big total, then AC and DC rows
+        fx0, fy = x0 + 22, y0 + 320
+        bw = (x1 - 22 - fx0 - GAP) // 2
+        for i, (title, total, rows) in enumerate(blocks):
+            bx = fx0 + i * (bw + GAP)
+            _text(d, (bx, fy), title, 26, bold=True, fill=DARK)
+            _fitted_value(d, bx, fy + 84, *_watts_parts(total), 60, 32, bw - 8)
+            for r, row in enumerate(rows):
+                lab, val = part(*row)
+                ry = fy + 128 + r * 40
+                used = _text(d, (bx, ry), lab, 28, fill=DARK, anchor="ls")
+                _fitted_text(d, (bx + bw, ry), val, 28, bw - used - 12, bold=True, anchor="rs")
 
     today_in, today_out = st.today_in_wh, st.today_out_wh
     if today_in is not None or today_out is not None:
         kwh = lambda v: "--" if v is None else fmt_kwh(v / 1000)  # noqa: E731
-        _text(d, (x0 + 22, y1 - 20), f"Today: {kwh(today_in)} in \u00b7 {kwh(today_out)} out", 26, fill=DARK, anchor="ls")
+        line = f"Today: {kwh(today_in)} in \u00b7 {kwh(today_out)} out"
+        _fitted_text(d, (x0 + 22, y1 - 20), line, 26, x1 - x0 - 44, fill=DARK, anchor="ls")
 
 
 def _legend(d: ImageDraw.ImageDraw, right: int, baseline: int) -> None:
