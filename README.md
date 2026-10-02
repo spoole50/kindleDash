@@ -136,7 +136,7 @@ Every press is logged and the log is saved to disk right away. Set `POWER_BUTTON
 
 ### Rotating
 
-`ROTATIONS` in `config.sh` lists the orientations to cycle through. The default is `"0 90"`:
+`ROTATIONS` in `config.sh` lists the orientations to cycle through. The default is `"0 270"`:
 
 | Value | Layout | Kindle held |
 |---|---|---|
@@ -152,7 +152,7 @@ To switch to the next orientation, do either of these:
 
 The Kindle shows "Rotating...", fetches the other layout and does a full refresh.
 The current orientation is saved in `kindledash/rotation`, so it survives restarts. Delete that file to go back to the first entry in `ROTATIONS`.
-If landscape comes out upside down, replace `90` with `270` in `ROTATIONS`.
+To turn landscape the other way, swap `270` for `90` in `ROTATIONS`.
 
 The first 20 touches of each run are logged with their raw coordinates, for example `touch 2100ms down x=... y=...`.
 The touch panel's axes don't necessarily match the screen's. To accept the hold only in one area, such as a corner, touch that corner a few times, read the coordinates from the log, and set `TOUCH_AREA="xmin ymin xmax ymax"`.

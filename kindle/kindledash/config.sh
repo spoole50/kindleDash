@@ -9,8 +9,8 @@ SERVER="http://192.168.113.186:8765"
 #   90  landscape, Kindle turned counter-clockwise (power button on the right)
 #   180 portrait, upside down
 #   270 landscape, Kindle turned clockwise (power button on the left)
-# (if landscape comes out upside down, use the other of 90/270)
-ROTATIONS="0 90"
+# (to turn landscape the other way, use the other of 90/270)
+ROTATIONS="0 270"
 # Seconds between polls (the server re-renders every 30 s)
 INTERVAL=60
 # Full flashing refresh every N redraws to clear ghosting
