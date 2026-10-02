@@ -42,6 +42,14 @@ class Settings:
     # with their battery capacity in Wh, for the time-left estimate
     bluetti_bucket: str = "bluetti"
     bluetti_stations: tuple[tuple[str, float | None], ...] = (("AP300", 2764.8), ("AC180", 1152.0))
+    # UniFi Protect, for the CAMERA page: the console's address, a local account
+    # (a Protect "View Only" user is enough), and the cameras by their Protect
+    # name, optionally with a label: PROTECT_CAMERAS=garageCam=Outer garage
+    protect_host: str = ""
+    protect_user: str = ""
+    protect_password: str = ""
+    protect_cameras: tuple[tuple[str, str], ...] = ()
+    camera_refresh_seconds: int = 30  # while the Kindle shows the page; every 5 min otherwise
     # Raw touch coordinates -> panel pixels (portrait 1236 x 1648). The defaults
     # assume the touch panel already reports panel pixels.
     touch_swap_xy: bool = False
@@ -80,6 +88,11 @@ class Settings:
             atv_credentials=env("ATV_CREDENTIALS", cls.atv_credentials),
             bluetti_bucket=env("BLUETTI_BUCKET", cls.bluetti_bucket),
             bluetti_stations=_stations(env("BLUETTI_STATIONS", "")) or cls.bluetti_stations,
+            protect_host=env("PROTECT_HOST", ""),
+            protect_user=env("PROTECT_USER", ""),
+            protect_password=env("PROTECT_PASSWORD", ""),
+            protect_cameras=tuple((n, label or n) for n, label in _plugs(env("PROTECT_CAMERAS", ""))),
+            camera_refresh_seconds=max(10, int(env("CAMERA_REFRESH_SECONDS", cls.camera_refresh_seconds))),
             touch_swap_xy=_flag(env("TOUCH_SWAP_XY", "")),
             touch_flip_x=_flag(env("TOUCH_FLIP_X", "")),
             touch_flip_y=_flag(env("TOUCH_FLIP_Y", "")),

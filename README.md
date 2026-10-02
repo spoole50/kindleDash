@@ -58,6 +58,36 @@ A station with no reading for 2 minutes (bluetti2influx stopped, e.g. to use the
 Bluetti app) shows **NO DATA SINCE HH:MM**. AP300 counts as "in" what it passes
 through from the grid as well as what charges the battery, so the time to full uses in − out.
 
+### Camera page
+
+The **CAMERA** tab shows a still from each UniFi Protect camera in `PROTECT_CAMERAS`
+(`name=Label`, by the camera's name in Protect), converted to the panel's 16 grays with
+dithering. Tap a picture to take a new one. While the Kindle shows the page, the stills
+refresh every `CAMERA_REFRESH_SECONDS` (30); otherwise every 5 minutes, so the health page
+knows the camera works. Stills stay in memory only.
+
+The dashboard logs in to UniFi OS at `PROTECT_HOST` with `PROTECT_USER` / `PROTECT_PASSWORD`;
+create a local Protect user with the **View Only** role for it. Full-resolution stills come
+from Protect's integration API (Protect 5+); older versions give 640×360 ones. Protect's
+self-signed certificate isn't verified, so keep this on the LAN. HomeKit-only cameras
+(e.g. Logitech Circle View) can't be shown: Apple Home doesn't share their stills.
+
+### Health
+
+Every page's header turns the date into a black **⚠ N ISSUES** badge while something
+isn't working. Tap the clock (on any page) for the health page: a row per subsystem with
+**OK** or **PROBLEM** and what it last did:
+
+| Check | Problem when |
+|---|---|
+| Solar (Victron) | InfluxDB fails, or no new Victron reading for 10 min |
+| Bluetti, per station | InfluxDB fails, or no reading for 2 min (bluetti2influx stopped or out of range) |
+| Kasa plugs | any plug unreachable |
+| Apple TV | not paired, or can't connect |
+| Camera, per camera | the last snapshot failed |
+
+Checks run every 15 s. `/admin` lists the same checks, and `/status` has them as JSON.
+
 ### Power page
 
 The **POWER** tab (`page=lights` in URLs) shows a big tile per Kasa smart plug (`KASA_HOSTS`): solid
@@ -98,7 +128,7 @@ credentials are saved in the container's `data` volume (`/data/appletv.json`, mo
 their bundle IDs, ready to copy into `ATV_APPS`.
 
 Design rules for e-ink: every gray is a multiple of `0x11` (the panel's 16 levels),
-nothing relies on colour, type is large and bold, and there's an "Updated HH:MM" stamp.
+nothing relies on colour, type is large and bold, and the clock shows when the page was drawn.
 When InfluxDB can't be reached, the last good image is kept and gets a black
 **STALE since HH:MM** badge.
 
@@ -168,7 +198,7 @@ status, a **Rotate Kindle 90°** button, a button per plug, and Apple TV pairing
 | `GET /portrait.png[?rotate=0\|90\|180\|270]` | Latest 1236×1648 portrait render, served from memory. Sends an `ETag` and supports `If-None-Match` (returns 304). `/dashboard.png` is an alias. |
 | `GET /landscape.png[?rotate=…]` | 1648×1236 landscape layout. The Kindle panel is physically portrait, so the client requests it with `rotate=90` or `270`. |
 | `…&battery=<0-100>&charging=<0\|1>` | Optional on either image. The Kindle client sends its own battery this way, and the next render shows "Kindle [battery icon] 85%" in the header, next to the date. Low battery (under 20% and not charging) is drawn bold black. The indicator disappears if no report has arrived for 15 minutes. Malformed values are ignored. |
-| `…&page=solar\|bluetti\|lights\|tv` | Which tab to show, on either image (default `solar`). |
+| `…&page=solar\|bluetti\|lights\|tv\|cameras\|health` | Which page to show, on either image (default `solar`). |
 | `POST /tap?x=&y=&rotate=&page=` | A tap at raw touch coordinates on the page the Kindle shows. Needs the token. Replies `204` if nothing was hit, otherwise lines: `flash <left> <top> <width> <height>` (panel pixels), `page <name>`, `redraw`. |
 | `GET /rotate/count` | Polled by the Kindle; it rotates once each time the counter goes up (the **Rotate** button on `/admin`). |
 | `GET /admin` | Admin page for a browser (see [Admin page](#admin-page)). `/admin/image.png?page=&layout=` serves a page upright, and `POST /admin/rotate`, `POST /admin/plug?host=` and `POST /admin/tv/pair?protocol=companion\|airplay` / `/admin/tv/pin` / `/admin/tv/cancel` are its buttons. |

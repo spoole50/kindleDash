@@ -19,21 +19,25 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from PIL import Image
 
-from . import render, touch
+from . import health, render, touch
 from .config import Settings
 from .data import Snapshot
 from .appletv import PROTOCOLS as TV_PROTOCOLS
 from .appletv import AppleTV
 from .bluetti import BluettiSnapshot
+from .camera import Protect, Shot
 from .plugs import KasaPlugs
 
 log = logging.getLogger("kindle_dash")
 
 KINDLE_REPORT_MAX_AGE_S = 15 * 60  # hide the Kindle's battery after this long without a report
-PAGE_NAMES = tuple(name for name, _ in render.PAGES)
+PAGE_NAMES = tuple(name for name, _ in render.PAGES) + render.HIDDEN_PAGES
 CONFIRM_S = 10  # how long a "tap again" prompt waits for the second tap
 TV_REDRAW = ("play_pause", "skip_forward", "skip_backward", "power")  # change what's playing: redraw after
 TV_SETTLE_S = 1.5  # let the Apple TV report the change before redrawing
+CAMERA_IDLE_S = 5 * 60  # snapshot this often while nobody's looking, so the health page knows the camera works
+CAMERA_VIEW_S = 3 * 60  # the Kindle counts as looking at the cameras for this long after fetching the page
+HEALTH_S = 15
 
 
 class State:
@@ -49,6 +53,14 @@ class State:
         self.bluetti: BluettiSnapshot | None = None
         self.bluetti_error: str | None = None
         self.bluetti_stale_since: datetime | None = None
+        self.camera_lock = threading.Lock()
+        self.shots = [Shot(name, label) for name, label in settings.protect_cameras]
+        s = settings
+        self.protect = Protect(s.protect_host, s.protect_user, s.protect_password) if s.protect_host and s.protect_user and self.shots else None
+        self.cameras_at = 0.0  # monotonic time of the last snapshot round
+        self.health_lock = threading.Lock()
+        self.checks: list[health.Check] = []
+        self.problems: tuple[str, ...] = ()  # names of the failing checks; badges every page while non-empty
         self.snapshot: Snapshot | None = None
         # solar, per layout: last render from fresh data
         self.good_images: dict[str, Image.Image] = {}
@@ -75,6 +87,8 @@ class State:
         # (page, layout, rotate, when) of the Kindle's last image fetch, for /admin
         self.kindle_view: tuple[str, str, int, datetime] | None = None
         self.render_tv()
+        self.render_cameras()
+        self.update_health()
 
     @staticmethod
     def now() -> datetime:
@@ -120,6 +134,8 @@ class State:
         self.render_lights()
         self.render_tv()
         self.render_bluetti()
+        self.render_cameras()
+        self.update_health()
         with self.render_lock:
             if self.snapshot is None or self.stale_since is not None:
                 return  # nothing fresh to redraw; the next good poll picks the report up
@@ -191,6 +207,48 @@ class State:
             self.bluetti_stale_since = self.bluetti_stale_since or self.bluetti.fetched_at
         self.render_bluetti()
 
+    def render_cameras(self) -> None:
+        with self.camera_lock:
+            kindle = self.kindle_battery()
+            self._publish({lay: render.render_cameras(self.shots, self.now(), self.s.zone, lay, kindle) for lay in render.LAYOUTS}, "cameras")
+
+    def refresh_cameras(self) -> None:
+        """A new still from every camera; a failed one keeps its last still, marked failed."""
+        if self.protect is None:
+            return
+        self.cameras_at = time.monotonic()
+        for shot in self.shots:
+            try:
+                shot.image = self.protect.snapshot(shot.name)
+                shot.at, shot.error = self.now(), None
+            except Exception as exc:
+                log.warning("camera %s: %s: %s", shot.name, type(exc).__name__, exc)
+                shot.error = str(exc)[:100] or type(exc).__name__
+        self.render_cameras()
+        self.update_health()
+
+    def cameras_viewed(self) -> bool:
+        """Is the Kindle on the camera page (it fetched it in the last few minutes)?"""
+        v = self.kindle_view
+        return bool(v and v[0] == "cameras" and (self.now() - v[3]).total_seconds() < CAMERA_VIEW_S)
+
+    def update_health(self) -> None:
+        """Re-run the checks and redraw the health page; badge every page while any fails."""
+        with self.health_lock:
+            now = self.now()
+            self.checks = health.checks(self, now)
+            kindle = self.kindle_battery()
+            self._publish({lay: render.render_health(self.checks, now, self.s.zone, lay, kindle) for lay in render.LAYOUTS}, "health")
+            problems = tuple(c.name for c in self.checks if not c.ok)
+            if problems != self.problems:
+                if problems:
+                    log.warning("health: problems with %s", ", ".join(problems))
+                else:
+                    log.info("health: all OK")
+                with self.lock:
+                    self.problems = problems
+                    self._png.clear()  # add or drop the badge
+
     def render_lights(self) -> None:
         """Redraw the lights page from the last plug states (once they've been read)."""
         if not self.lights_polled:
@@ -239,7 +297,10 @@ class State:
         with self.lock:
             cached = self._png.get((page, layout, rotate))
             if cached is None:
-                data = render.to_png(self.images[(page, layout)], rotate)
+                img = self.images[(page, layout)]
+                if self.problems and page != "health":
+                    img = render.issues_badge(img, len(self.problems))
+                data = render.to_png(img, rotate)
                 cached = (data, '"' + hashlib.md5(data).hexdigest() + '"')
                 self._png[(page, layout, rotate)] = cached
             return cached
@@ -258,6 +319,24 @@ async def _poll_bluetti(state: State, fetch) -> None:
     while True:
         await asyncio.to_thread(state.update_bluetti, fetch)
         await asyncio.sleep(state.s.refresh_seconds)
+
+
+async def _poll_cameras(state: State) -> None:
+    """Snapshots every CAMERA_REFRESH_SECONDS while the Kindle shows them, every few minutes otherwise."""
+    while True:
+        every = state.s.camera_refresh_seconds if state.cameras_viewed() else CAMERA_IDLE_S
+        if time.monotonic() - state.cameras_at >= every:
+            await asyncio.to_thread(state.refresh_cameras)
+        await asyncio.sleep(5)
+
+
+async def _poll_health(state: State) -> None:
+    while True:
+        await asyncio.sleep(HEALTH_S)
+        try:
+            await asyncio.to_thread(state.update_health)
+        except Exception:
+            log.exception("health check failed")
 
 
 async def _poll_lights(state: State) -> None:
@@ -290,6 +369,10 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
         tasks = [asyncio.create_task(_poll(state, fetch)), asyncio.create_task(_poll_lights(state))] if poll else []
         if poll and fetch_bluetti:
             tasks.append(asyncio.create_task(_poll_bluetti(state, fetch_bluetti)))
+        if poll:
+            tasks.append(asyncio.create_task(_poll_health(state)))
+        if poll and state.protect:
+            tasks.append(asyncio.create_task(_poll_cameras(state)))
         if poll and state.tv:
             tasks.append(asyncio.create_task(state.tv.run()))
         yield
@@ -379,7 +462,7 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
         size = render.size(layout)
         px, py = touch.raw_to_panel(x, y, settings)
         ix, iy = touch.panel_to_image(px, py, rotate, size)
-        target = touch.hit(render.targets(page, layout, state.plugs.plugs, settings.atv_apps), ix, iy)
+        target = touch.hit(render.targets(page, layout, state.plugs.plugs, settings.atv_apps, len(state.shots)), ix, iy)
         log.info("tap raw=%d,%d panel=%d,%d %s/%s image=%d,%d -> %s", x, y, px, py, page, layout, ix, iy, target.action if target else "-")
         if target is None:
             return Response(status_code=204)
@@ -397,6 +480,9 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
             else:
                 await state.plugs.toggle(arg)
             await asyncio.to_thread(state.render_lights)
+            lines.append("redraw")
+        elif kind == "camera":
+            await asyncio.to_thread(state.refresh_cameras)
             lines.append("redraw")
         elif kind == "atv":
             # remote keys just flash (the Kindle puts its image back); ones that
@@ -502,6 +588,8 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
                 "fetched_at": iso(state.bluetti.fetched_at) if state.bluetti else None,
                 "error": state.bluetti_error,
             },
+            "health": [c._asdict() for c in state.checks],
+            "cameras": [{"name": s.name, "label": s.label, "at": iso(s.at), "error": s.error} for s in state.shots],
             "plugs": [asdict(p) for p in state.plugs.plugs] if state.lights_polled else None,
             "tv": {
                 "connected": state.tv.connected,
@@ -623,7 +711,12 @@ def admin_html(state: State, done: str) -> str:
         "tv-paired": "Paired. Connecting to the Apple TV\u2026",
         "tv-error": f"Apple TV: {e(state.tv.error or 'pairing failed') if state.tv else ''}",
     }.get(done, "")
+    checks = "".join(
+        f'<li><b class="{"ok" if c.ok else "bad"}">{"OK" if c.ok else "PROBLEM"}</b> {e(c.name)} <span class="muted">&middot; {e(c.detail)}</span></li>'
+        for c in state.checks
+    )
     return ADMIN_PAGE.format(
+        health=checks,
         tv=_admin_tv(state.tv),
         kindle=kindle,
         data=data,
@@ -652,6 +745,7 @@ button{{font:inherit;padding:.7rem 1.2rem;border-radius:.5rem;border:2px solid v
 .row{{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin:.4rem 0}}
 input{{font:inherit;padding:.6rem;border-radius:.5rem;border:2px solid var(--fg);background:var(--bg);color:var(--fg);width:8rem}}
 button.quiet{{border-width:1px;padding:.4rem .9rem}} code{{font-size:.9em}} details{{margin-top:.6rem}}
+.health{{list-style:none;padding:0}} .health li{{margin:.3rem 0}} .health b{{display:inline-block;min-width:5.5rem}} .health .bad{{background:var(--fg);color:var(--bg);padding:0 .4rem;border-radius:.3rem}}
 .views a{{margin-right:.8rem}} .views a.cur{{font-weight:bold;text-decoration:none}}
 img{{max-width:100%;height:auto;border:1px solid var(--line);margin-top:.6rem;background:#fff}}
 </style></head>
@@ -661,6 +755,8 @@ img{{max-width:100%;height:auto;border:1px solid var(--line);margin-top:.6rem;ba
 <h2>Kindle</h2>
 <p>{kindle}</p>
 <form method="post" action="/admin/rotate"><button>Rotate Kindle 90&deg;</button></form>
+<h2>Health</h2>
+<ul class="health">{health}</ul>
 <h2>Solar data</h2>
 <p>{data} <span class="muted">&middot; last update {updated}</span></p>
 <h2>Plugs</h2>

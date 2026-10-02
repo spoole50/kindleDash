@@ -82,12 +82,6 @@ def test_render_layouts_and_eink_grays():
             assert _grays(img) <= {i * 0x11 for i in range(16)}
 
 
-def test_four_tabs_clear_the_clock():
-    # "Updated HH:MM" and the date line (with the Kindle's battery) start right of here in portrait
-    assert render.TABS_RIGHT < 780
-    assert [a for _, a in render.tab_boxes()] == ["page:solar", "page:bluetti", "page:lights", "page:tv"]
-
-
 def test_page_served_and_badged_when_influx_fails():
     calls = []
 

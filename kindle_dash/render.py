@@ -315,9 +315,11 @@ class _Ctx:
 
 
 # Pages, in tab order: (name used in URLs and taps, tab label)
-PAGES = (("solar", "SOLAR"), ("bluetti", "BLUETTI"), ("lights", "POWER"), ("tv", "TV"))  # "lights" stays the URL name; Kindles remember it
+PAGES = (("solar", "SOLAR"), ("bluetti", "BLUETTI"), ("lights", "POWER"), ("tv", "TV"), ("cameras", "CAMERA"))  # "lights" stays the URL name; Kindles remember it
+HIDDEN_PAGES = ("health",)  # no tab: opened by tapping the clock
 HEADER_RULE_Y = 126  # the rule under the header; tabs sit above it
-TAB_SIZE, TAB_PAD, TAB_GAP = 36, 22, 16  # four tabs, clear of the clock and date in portrait
+TAB_SIZE, TAB_PAD, TAB_GAP = 32, 18, 12  # five tabs, clear of the clock and date in portrait
+CLOCK_W = 200  # the date, or the issues badge over it, at the top right; the Kindle's battery sits left of the time above
 
 
 def tab_boxes() -> list[tuple[tuple[int, int, int, int], str]]:
@@ -328,6 +330,12 @@ def tab_boxes() -> list[tuple[tuple[int, int, int, int], str]]:
         out.append(((x, 30, x + w, 114), f"page:{name}"))
         x += w + TAB_GAP
     return out
+
+
+def clock_target(layout: str) -> Target:
+    """The clock and date: opens the health page."""
+    w = size(layout)[0]
+    return Target((w - M - CLOCK_W - 40, 0, w, HEADER_RULE_Y + 4), (w - M - CLOCK_W, 26, w - M, 116), "page:health")
 
 
 def tab_targets() -> list[Target]:
@@ -351,11 +359,10 @@ def header(img: Image.Image, page: str, now: datetime, kindle: KindleBattery | N
         d.rounded_rectangle((x0, y0, x1, y1), radius=14, fill=BLACK if active else WHITE, outline=BLACK, width=3)
         _text(d, ((x0 + x1) / 2, (y0 + y1) / 2), label, TAB_SIZE, bold=True, fill=WHITE if active else BLACK, anchor="mm")
     y = 26
-    _text(d, (w - M, y + 44), f"Updated {now:%H:%M}", 40, bold=True, anchor="rs")
-    date = f"{now:%a %-d %b}"
-    _text(d, (w - M, y + 80), date, 28, fill=DARK, anchor="rs")
+    clock_w = _text(d, (w - M, y + 44), f"{now:%H:%M}", 44, bold=True, anchor="rs")
+    _text(d, (w - M, y + 80), f"{now:%a %-d %b}", 28, fill=DARK, anchor="rs")
     if kindle:
-        _kindle_battery(d, w - M - d.textlength(date, font=font(28)) - 28, y + 80, kindle)
+        _kindle_battery(d, w - M - clock_w - 20, y + 40, kindle)
     d.rectangle((M, HEADER_RULE_Y, w - M, HEADER_RULE_Y + 4), fill=BLACK)
     return HEADER_RULE_Y + 4 + GAP
 
@@ -365,7 +372,7 @@ def _header(c: _Ctx) -> int:
 
 
 def _kindle_battery(d: ImageDraw.ImageDraw, right: float, baseline: float, kb: KindleBattery) -> None:
-    """'Kindle [icon] 85%' ending at `right`; bold black when low and not charging."""
+    """'[icon] 85%' ending at `right`; bold black when low and not charging."""
     low = kb.level < LOW_KINDLE_BATTERY and not kb.charging
     fill, size = (BLACK, 28) if low else (DARK, 24)
     pct = f"{kb.level}%"
@@ -386,7 +393,6 @@ def _kindle_battery(d: ImageDraw.ImageDraw, right: float, baseline: float, kb: K
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
         bolt = [(cx + 3, y0 - 3), (cx - 9, cy + 2), (cx - 1, cy + 2), (cx - 4, y1 + 3), (cx + 9, cy - 2), (cx + 1, cy - 2)]
         d.polygon(bolt, fill=WHITE, outline=BLACK, width=2)
-    _text(d, (x0 - 10, baseline), "Kindle", size, bold=low, fill=fill, anchor="rs")
 
 
 def _footer(c: _Ctx) -> None:
@@ -578,10 +584,12 @@ def plug_boxes(layout: str, n: int) -> list[tuple[int, int, int, int]]:
     ]
 
 
-def targets(page: str, layout: str, plugs: list[Plug], tv_apps: tuple[tuple[str, str], ...] = ()) -> list[Target]:
-    """Everything tappable on a page: the tabs, plus a tile per plug or the TV remote's buttons."""
-    out = tab_targets()
-    if page == "lights":
+def targets(page: str, layout: str, plugs: list[Plug], tv_apps: tuple[tuple[str, str], ...] = (), n_cameras: int = 0) -> list[Target]:
+    """Everything tappable on a page: the tabs and clock, plus a tile per plug, the TV remote's buttons or the camera stills."""
+    out = tab_targets() + [clock_target(layout)]
+    if page == "cameras":
+        out += [Target(box, box, "camera:refresh") for box in camera_boxes(layout, n_cameras)]
+    elif page == "lights":
         out += [Target(box, box, f"plug:{p.host}") for box, p in zip(plug_boxes(layout, len(plugs)), plugs)]
     elif page == "tv":
         out += [Target(box, box, f"atv:{action}") for box, action, _ in tv_buttons(layout, tv_apps)]
@@ -1003,6 +1011,118 @@ def render_bluetti(
     return quantize(img)
 
 
+# --------------------------------------------------------------------------- camera page
+
+CAPTION_H = 56  # under each still: its label and when it was taken
+
+
+def camera_boxes(layout: str, n: int) -> list[tuple[int, int, int, int]]:
+    """Each camera's cell (still + caption): stacked in portrait, a 2-column grid in landscape."""
+    w, h = size(layout)
+    top, bottom = HEADER_RULE_Y + 4 + GAP, h - 50
+    if n <= 0:
+        return []
+    cols = 2 if layout == "landscape" and n > 1 else 1
+    rows = math.ceil(n / cols)
+    cw = (w - 2 * M - (cols - 1) * GAP) // cols
+    # a 16:9 still at full width, unless that's taller than its share of the page
+    ch = min((bottom - top - (rows - 1) * GAP) // rows, cw * 9 // 16 + CAPTION_H)
+    top += (bottom - top - rows * ch - (rows - 1) * GAP) // 2  # centred in what's left
+    return [
+        (M + (i % cols) * (cw + GAP), top + (i // cols) * (ch + GAP), M + (i % cols) * (cw + GAP) + cw, top + (i // cols) * (ch + GAP) + ch)
+        for i in range(n)
+    ]
+
+
+GRAYS_16 = Image.new("P", (1, 1))
+GRAYS_16.putpalette([v for i in range(16) for v in (i * 0x11,) * 3])
+
+
+def photo(img: Image.Image, w: int, h: int) -> Image.Image:
+    """A grayscale photo scaled to fit w x h, contrast stretched and dithered
+    to the panel's 16 grays (dithering keeps smooth shades on e-ink)."""
+    from PIL import ImageOps
+
+    img = ImageOps.contain(img.convert("L"), (w, h), Image.LANCZOS)
+    img = ImageOps.autocontrast(img, cutoff=1)
+    return img.convert("RGB").quantize(palette=GRAYS_16, dither=Image.Dither.FLOYDSTEINBERG).convert("L")
+
+
+def render_cameras(shots, now: datetime, tz, layout: str = "portrait", kindle: KindleBattery | None = None) -> Image.Image:
+    """Each camera's latest still with its label and age; tapping one takes new ones."""
+    img = Image.new("L", size(layout), WHITE)
+    w, h = img.size
+    header(img, "cameras", now.astimezone(tz), kindle)
+    d = ImageDraw.Draw(img)
+    if not shots:
+        _text(d, (w / 2, h / 2), "No cameras configured (PROTECT_CAMERAS)", 40, bold=True, anchor="mm")
+        return quantize(img)
+    for box, shot in zip(camera_boxes(layout, len(shots)), shots):
+        x0, y0, x1, y1 = box
+        iy1 = y1 - CAPTION_H
+        if shot.image is not None:
+            pic = photo(shot.image, x1 - x0, iy1 - y0)
+            px, py = x0 + (x1 - x0 - pic.width) // 2, y0 + (iy1 - y0 - pic.height) // 2
+            img.paste(pic, (px, py))
+            d.rectangle((px - 2, py - 2, px + pic.width + 1, py + pic.height + 1), outline=BLACK, width=2)
+        else:
+            d.rounded_rectangle((x0, y0, x1, iy1), radius=14, fill=FAINT, outline=BLACK, width=3)
+            msg = "Can't reach the camera" if shot.error else "Taking a snapshot\u2026"
+            _text(d, ((x0 + x1) / 2, (y0 + iy1) / 2), msg, 40, bold=True, anchor="mm")
+        used = _text(d, (x0, y1 - 14), shot.label, 34, bold=True, anchor="ls")
+        if shot.error:
+            when = f"FAILED: {shot.error}"
+            if shot.at:
+                when = f"{when}  \u00b7  last {shot.at.astimezone(tz):%H:%M}"
+            _fitted_text(d, (x1, y1 - 14), when, 26, x1 - x0 - used - 24, bold=True, anchor="rs")
+        elif shot.at:
+            _text(d, (x1, y1 - 14), f"{shot.at.astimezone(tz):%H:%M:%S}", 28, bold=True, fill=DARK, anchor="rs")
+    _text(d, (w - M, h - 16), "UniFi Protect  \u00b7  tap a picture for a new one", 22, fill=DARK, anchor="rs")
+    return quantize(img)
+
+
+# --------------------------------------------------------------------------- health
+
+
+def issues_badge(img: Image.Image, n: int) -> Image.Image:
+    """A copy of `img` with a black "! N ISSUES" badge over the date (tap it for the health page)."""
+    out = img.copy()
+    d = ImageDraw.Draw(out)
+    box = (out.width - M - CLOCK_W, 80, out.width - M, 118)
+    d.rectangle((box[0], 78, box[2], 120), fill=WHITE)
+    d.rounded_rectangle(box, radius=10, fill=BLACK)
+    text = f"\u26a0 {n} ISSUE{'S' if n != 1 else ''}"
+    k = _shrink(d, ((text, 26),), CLOCK_W - 20)
+    d.text(((box[0] + box[2]) / 2, (box[1] + box[3]) / 2), text, font=font(int(26 * k), True), fill=WHITE, anchor="mm")
+    return quantize(out)
+
+
+def render_health(checks, now: datetime, tz, layout: str = "portrait", kindle: KindleBattery | None = None) -> Image.Image:
+    """A row per subsystem: OK or PROBLEM, and what it last did."""
+    img = Image.new("L", size(layout), WHITE)
+    w, h = img.size
+    header(img, "health", now.astimezone(tz), kindle)
+    d = ImageDraw.Draw(img)
+    bad = sum(not c.ok for c in checks)
+    y = HEADER_RULE_Y + 4 + GAP
+    _text(d, (M, y + 50), "All systems OK" if not bad else f"{bad} problem{'s' if bad != 1 else ''}", 48, bold=True, anchor="ls")
+    y += 80
+    row_h = min(120, (h - 50 - y) // max(1, len(checks)))
+    pill_w = 210
+    for c in checks:
+        mid = y + row_h // 2
+        pill = (M, mid - 26, M + pill_w, mid + 26)
+        d.rounded_rectangle(pill, radius=12, fill=WHITE if c.ok else BLACK, outline=BLACK, width=3)
+        _text(d, ((pill[0] + pill[2]) / 2, mid), "OK" if c.ok else "PROBLEM", 30, bold=True, fill=BLACK if c.ok else WHITE, anchor="mm")
+        tx = M + pill_w + 28
+        _fitted_text(d, (tx, mid - 6), c.name, 36, w - M - tx, bold=True, anchor="ls")
+        _fitted_text(d, (tx, mid + 32), c.detail, 26, w - M - tx, bold=not c.ok, fill=BLACK if not c.ok else DARK, anchor="ls")
+        y += row_h
+        d.line((M, y - 1, w - M, y - 1), fill=FAINT, width=2)
+    _text(d, (w - M, h - 16), "Tap a tab to go back", 22, fill=DARK, anchor="rs")
+    return quantize(img)
+
+
 def _hatch_swatch(img: Image.Image, box):
     """Legend swatch matching the chart's /// hatch."""
     x0, y0, x1, y1 = (int(v) for v in box)
@@ -1022,7 +1142,7 @@ def stale_badge(img: Image.Image, since: datetime, tz) -> Image.Image:
     text = f"STALE since {since.astimezone(tz):%H:%M}"
     f = font(30, True)
     tw = d.textlength(text, font=f)
-    # over "Updated HH:MM", which it replaces; the date line below stays
+    # over the clock, which it replaces; the date line below stays
     box = (out.width - M - tw - 32, 24, out.width - M, 80)
     d.rectangle((box[0] - 8, 20, out.width - M, 82), fill=WHITE)
     d.rounded_rectangle(box, radius=12, fill=BLACK)
