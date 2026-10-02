@@ -3,19 +3,11 @@
 BIN="$(cd "$(dirname "$0")" && pwd)"
 . "$BIN/config.sh"
 
-STATE=/var/tmp/kindledash
-LOG=/mnt/us/kindledash/kindledash.log   # on the USB drive, readable from a computer
+. "$BIN/common.sh"
 PNG="$STATE/dashboard.png"
 TMP="$STATE/download.png"
-mkdir -p "$STATE"
 echo $$ > "$STATE/pid"
-
-FBINK=""
-for f in "$FBINK_BIN" /mnt/us/libkh/bin/fbink /usr/bin/fbink /usr/local/bin/fbink /mnt/us/usbnet/bin/fbink /mnt/us/koreader/fbink; do
-    [ -n "$f" ] && [ -x "$f" ] && FBINK="$f" && break
-done
-
-log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+FBINK="$(find_fbink)"
 
 # Keep the tail of the system log on the USB drive: /var/log is wiped by a reboot,
 # so this is the only record of what happened just before one.
@@ -53,10 +45,56 @@ reconnect_wifi() {
     wifi_up && log "Wi-Fi connected" || log "Wi-Fi still down"
 }
 
+# Power button (event0 = bd71828-pwrkey). Reads raw input events through one
+# persistent fd so none are missed; on this 32-bit kernel each event is 16 bytes:
+# tv_sec, tv_usec, type | code << 16, value (1 = down, 0 = up).
+# Short press -> toggle backlight; hold >= LONG_PRESS_MS -> back to the library.
+KEY_POWER_WORD=$((1 + 116 * 65536))  # EV_KEY, KEY_POWER
+button_watcher() {
+    exec 3< "$BUTTON_DEV" || { log "cannot open $BUTTON_DEV"; return; }
+    down_s=""; down_us=""
+    while :; do
+        set -- $(dd bs=16 count=1 <&3 2>/dev/null | od -An -tu4 -v)
+        [ $# -eq 4 ] || { sleep 1; continue; }
+        [ "$3" = "$KEY_POWER_WORD" ] || continue
+        if [ "$4" = "1" ]; then
+            down_s=$1; down_us=$2
+        elif [ "$4" = "0" ] && [ -n "$down_s" ]; then
+            ms=$(( ($1 - down_s) * 1000 + ($2 - down_us) / 1000 ))
+            down_s=""
+            if [ $ms -ge "$LONG_PRESS_MS" ]; then
+                log "power held ${ms}ms -> exit to library"
+                kill -USR1 "$MAIN_PID"
+                return
+            elif [ $ms -lt 1000 ]; then
+                log "power pressed ${ms}ms -> backlight"
+                backlight_toggle
+            else
+                log "power held ${ms}ms -> ignored"
+            fi
+        fi
+    done
+}
+
 error_marker() {
     # small inverted label in the bottom-left corner; the image underneath stays
     "$FBINK" -q -h -x 0 -y -1 " ! offline since $1 " 2>/dev/null
 }
+
+MAIN_PID=$$
+WATCHER=""
+shutdown() {
+    [ -n "$WATCHER" ] && kill "$WATCHER" 2>/dev/null
+    rm -f "$STATE/pid"
+    if [ "$1" = "library" ]; then
+        "$FBINK" -q -c -f -m -y 10 "Returning to the library..." 2>/dev/null
+        restore_ui
+    fi
+    log "stopped ($1)"
+    exit 0
+}
+trap 'shutdown library' USR1
+trap 'shutdown signal' TERM INT
 
 lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null
 if [ "$STOP_FRAMEWORK" = "1" ]; then
@@ -67,6 +105,11 @@ fi
 "$FBINK" -q -c -f 2>/dev/null
 log "started: $FULL_URL (fbink: $FBINK) uptime=$(cut -d' ' -f1 /proc/uptime)s"
 [ -f "$SYSLOG_COPY" ] && mv "$SYSLOG_COPY" "$SYSLOG_COPY.prev"  # what preceded the last reboot
+if [ "$POWER_BUTTON" = "1" ] && [ -r "$BUTTON_DEV" ]; then
+    button_watcher &
+    WATCHER=$!
+    log "power button watcher on $BUTTON_DEV"
+fi
 
 last_sum=""
 draws=0
@@ -98,5 +141,6 @@ while true; do
         wifi_up || reconnect_wifi
     fi
     save_syslog
-    sleep "$INTERVAL"
+    sleep "$INTERVAL" &
+    wait $!  # interruptible, so a long press is handled immediately
 done

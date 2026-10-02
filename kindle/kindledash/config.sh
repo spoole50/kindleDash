@@ -14,3 +14,8 @@ STOP_FRAMEWORK=1
 # curl timeouts (seconds)
 CONNECT_TIMEOUT=10
 MAX_TIME=30
+# Power button: short press toggles the backlight, hold >= LONG_PRESS_MS
+# returns to the library (well under the ~9 s hold that triggers a restart).
+POWER_BUTTON=1
+LONG_PRESS_MS=2000
+BUTTON_DEV=/dev/input/event0

@@ -117,11 +117,20 @@ dot_clean /Volumes/Kindle
 
 The log is at `/mnt/us/kindledash/kindledash.log`.
 
+### Power button
+
+While the dashboard runs, the loop reads the power key directly (`/dev/input/event0`):
+
+- **quick press**: toggles the backlight on or off, remembering the previous level
+- **hold for 2 s or more**: returns to the library. It restarts the Kindle UI and opens Home, which can take up to about a minute.
+
+Every press is logged with its duration. Set `POWER_BUTTON=0` or change `LONG_PRESS_MS` in `config.sh`.
+Don't hold the button for 9 s or more: that's the Kindle's own restart.
+
 ### Stopping it
 
-With `STOP_FRAMEWORK=1` (the default), the library UI isn't running, so you can't tap *Stop*. Instead:
+- **Hold the power button for about 2 s** (see above).
+- **Over SSH:** `sh "/mnt/us/documents/Solar Dashboard - Stop.sh"`.
+- **Last resort:** hold the power button until the Kindle restarts. Nothing autostarts.
 
-- **over SSH:** `sh "/mnt/us/documents/Solar Dashboard - Stop.sh"`. This kills the loop, re-enables the screensaver and restarts the UI.
-- **without SSH:** hold the power button until the Kindle restarts (this can take up to ~40 s). Nothing autostarts, so it boots back to the normal library.
-
-With `STOP_FRAMEWORK=0`, the library stays up and the *Stop* scriptlet works. The trade-off is that the stock UI may occasionally draw over the dashboard.
+If the screen stays blank after returning to the library, press power twice (sleep, then wake) to force a repaint.
