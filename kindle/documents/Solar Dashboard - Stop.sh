@@ -1,5 +1,9 @@
 #!/bin/sh
-# Stop the loop and give the Kindle its normal UI and power management back.
+# Name: Solar Dashboard - Stop
+# Author: spoole50
+# DontUseFBInk
+# Stops the loop and restores the Kindle UI and screensaver.
+# (Only reachable from the library when STOP_FRAMEWORK=0; otherwise run over SSH.)
 PIDFILE=/var/tmp/kindledash/pid
 if [ -f "$PIDFILE" ]; then
     kill "$(cat "$PIDFILE")" 2>/dev/null

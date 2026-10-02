@@ -77,32 +77,51 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 
 ## Kindle client
 
-`kindle/extensions/kindledash/` is a KUAL extension. Its loop:
+The client runs as **scriptlets**, the launcher used by the Universal Hotfix that
+ships with current jailbreaks. KUAL is obsolete on this firmware. Any `.sh` file in
+`documents/` appears in the library like a book and runs when you tap it.
+
+```
+kindle/
+  kindledash/            -> Kindle drive: kindledash/      (/mnt/us/kindledash)
+    config.sh               URL, rotation, interval, ...
+    kindledash.sh           the loop
+  documents/             -> Kindle drive: documents/       (/mnt/us/documents)
+    Solar Dashboard - Start.sh
+    Solar Dashboard - Stop.sh
+    Solar Dashboard - Log.sh
+```
+
+The loop:
 
 1. sets `preventScreenSaver 1` and stops the Kindle UI (`stop lab126_gui`, falling back to `stop framework`) so the UI can't draw over the dashboard
 2. every `INTERVAL` seconds, `curl`s the PNG with connect and total timeouts
 3. if the image's md5 changed, draws it with FBInk using a partial refresh, with a full flashing refresh every `FULL_REFRESH_EVERY` (15) draws to clear ghosting
 4. if a fetch fails, leaves the last image up, draws a small inverted "! offline since HH:MM" marker in the bottom-left corner, and toggles Wi-Fi via `lipc` to reconnect. The next successful fetch does a full redraw that removes the marker.
 
-### Requirements on the Kindle
+### Install (from a Mac)
 
-- Jailbreak, KUAL and MRPI (you already have these with spidercat on FW 5.18.6)
-- **FBInk**: the script looks in `/mnt/us/libkh/bin/fbink`, `/usr/bin/fbink`, `/usr/local/bin/fbink`, `/mnt/us/usbnet/bin/fbink` and `/mnt/us/koreader/fbink`. Set `FBINK_BIN` in `config.sh` if yours is somewhere else.
-- Optional but recommended: USBNetwork or another SSH option, so you can stop the dashboard remotely.
+`/mnt/us` on the Kindle is the root of its USB drive (`/Volumes/Kindle`).
 
-### Install
+```sh
+git clone https://github.com/spoole50/kindleDash.git ~/kindleDash
+cp -RX ~/kindleDash/kindle/kindledash /Volumes/Kindle/
+cp -X ~/kindleDash/kindle/documents/*.sh /Volumes/Kindle/documents/
+dot_clean /Volumes/Kindle
+```
 
-1. Connect the Kindle over USB and copy `kindle/extensions/kindledash` to `/mnt/us/extensions/kindledash` (it shows up as `extensions/` on the USB drive).
-2. Edit `extensions/kindledash/bin/config.sh`. Set `URL` to `http://<pi-ip>:8765/dashboard.png` (currently `192.168.113.186`) and adjust `ROTATE`, `INTERVAL` and so on if needed.
-3. Eject, open **KUAL → Solar Dashboard → Start dashboard**.
+1. Check `URL` in `/Volumes/Kindle/kindledash/config.sh`. It should be `http://<pi-ip>:8765/dashboard.png` (currently `192.168.113.186`).
+2. Eject. The three **Solar Dashboard** entries appear in the library.
+3. Tap **Solar Dashboard - Log** first. It shows whether FBInk was found; the hotfix normally installs it at `/mnt/us/libkh/bin/fbink`.
+4. Tap **Solar Dashboard - Start**.
 
-The log is at `/var/tmp/kindledash/kindledash.log` (KUAL → *Show last log lines*).
+The log is at `/var/tmp/kindledash/kindledash.log`.
 
 ### Stopping it
 
-With `STOP_FRAMEWORK=1` (the default), the Kindle UI and KUAL aren't running, so:
+With `STOP_FRAMEWORK=1` (the default), the library UI isn't running, so you can't tap *Stop*. Instead:
 
-- **over SSH:** `sh /mnt/us/extensions/kindledash/bin/stop.sh`. This kills the loop, re-enables the screensaver and restarts the UI.
-- **without SSH:** hold the power button until the Kindle restarts (this can take up to ~40 s). Nothing autostarts, so it boots back to the normal UI.
+- **over SSH:** `sh "/mnt/us/documents/Solar Dashboard - Stop.sh"`. This kills the loop, re-enables the screensaver and restarts the UI.
+- **without SSH:** hold the power button until the Kindle restarts (this can take up to ~40 s). Nothing autostarts, so it boots back to the normal library.
 
-With `STOP_FRAMEWORK=0`, KUAL stays usable and **Stop dashboard** works from the menu. The trade-off is that the stock UI may occasionally draw over the dashboard.
+With `STOP_FRAMEWORK=0`, the library stays up and the *Stop* scriptlet works. The trade-off is that the stock UI may occasionally draw over the dashboard.

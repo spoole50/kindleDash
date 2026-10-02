@@ -21,7 +21,7 @@ log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 200000 ] && tail -n 200 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
 
 if [ -z "$FBINK" ]; then
-    log "fbink not found; install it (e.g. via MRPI/KUAL 'Helper' or KOReader) or set FBINK_BIN"
+    log "fbink not found; set FBINK_BIN in config.sh"
     exit 1
 fi
 
@@ -51,7 +51,7 @@ error_marker() {
 
 lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null
 if [ "$STOP_FRAMEWORK" = "1" ]; then
-    sleep 3  # let KUAL close first
+    sleep 3  # let the scriptlet launcher return first
     stop lab126_gui 2>/dev/null || stop framework 2>/dev/null || /etc/init.d/framework stop 2>/dev/null
     sleep 2
 fi
