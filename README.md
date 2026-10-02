@@ -35,6 +35,9 @@ Lights tab (`/portrait.png?page=lights`):
 
 The **LIGHTS** tab shows a big tile per Kasa smart plug (`KASA_HOSTS`): solid
 black is ON, outlined is OFF, pale gray is unreachable. Tap a tile to toggle it.
+Each tile shows what the plug powers (from `KASA_HOSTS`), its name on up to two lines,
+and, for plugs with energy monitoring like the EP25, the power now and kWh today and
+this month. The footer shows the total.
 The Pi talks to the plugs directly on the LAN (python-kasa), so nothing changes in
 Apple Home, and a change made either place shows up in the other. The page
 re-reads the plugs every `LIGHTS_REFRESH_SECONDS`. The Kindle picks up changes made elsewhere at its next poll.
@@ -98,7 +101,7 @@ status, a **Rotate Kindle 90°** button and a button per plug.
 | `CONTROL_TOKEN` | – | **required**: shared secret for the Kindle's routes; it sends it as `X-Kindle-Token`. Generate with `openssl rand -hex 16`. |
 | `CONTROL_ALLOW_IPS` | – | optional comma-separated list; the Kindle's routes refuse other addresses (403) |
 | `ADMIN_PASSWORD` | – | **required** for `/admin` and `/status` (user `admin`) |
-| `KASA_HOSTS` | – | comma-separated plug IPs for the lights page, in display order |
+| `KASA_HOSTS` | – | comma-separated plug IPs for the lights page, in display order, each optionally `=kind` for the label on its tile, e.g. `192.168.113.14=light,192.168.113.36=ev charger` |
 | `LIGHTS_REFRESH_SECONDS` | `15` | how often plug states are re-read |
 | `TOUCH_SWAP_XY` / `TOUCH_FLIP_X` / `TOUCH_FLIP_Y` / `TOUCH_MAX_X` / `TOUCH_MAX_Y` | off / off / off / `1235` / `1647` | maps raw touch coordinates to panel pixels; the defaults assume they already match (see [Taps](#taps)) |
 

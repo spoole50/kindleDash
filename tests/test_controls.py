@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from kindle_dash import render, touch
 from kindle_dash.app import create_app
@@ -129,11 +129,33 @@ def test_pages_are_served_and_validated():
 
 
 def test_lights_page_has_eink_grays_and_offline_tiles():
-    plugs = [Plug("a", "Lamp", True), Plug("b", "A very long plug name indeed", False), Plug("c", "Gone", None)]
+    plugs = [
+        Plug("a", "Lamp", True, "light", 7, 0.05, 0.8),
+        Plug("b", "A very long plug name indeed, longer than two lines can hold", False, "ev charger", 0, 6.8, 123.4),
+        Plug("c", "Gone", None, "fan"),
+    ]
     for layout in render.LAYOUTS:
         img = render.render_lights(plugs, datetime(2026, 10, 2, tzinfo=timezone.utc), ZoneInfo("UTC"), layout)
         assert img.size == render.size(layout)
         assert {v for v, n in enumerate(img.histogram()) if n} <= {i * 0x11 for i in range(16)}
+
+
+def test_kasa_hosts_with_kinds(monkeypatch):
+    monkeypatch.setenv("KASA_HOSTS", "10.0.0.1=light, 10.0.0.2 , 10.0.0.3=ev charger")
+    s = Settings.from_env()
+    assert s.kasa_hosts == ("10.0.0.1", "10.0.0.2", "10.0.0.3")
+    assert dict(s.kasa_kinds) == {"10.0.0.1": "light", "10.0.0.3": "ev charger"}
+    plugs = KasaPlugs(s.kasa_hosts, dict(s.kasa_kinds))
+    assert [p.kind for p in plugs.plugs] == ["light", "", "ev charger"]
+
+
+def test_long_names_wrap_to_two_lines():
+    d = ImageDraw.Draw(Image.new("L", (10, 10)))
+    assert render._wrap(d, "Living Room Back Door", 40, 460) == ["Living Room Back", "Door"]
+    lines = render._wrap(d, "Bedroom Desk LEDs With An Extremely Long Name", 40, 460)
+    assert len(lines) == 2 and lines[1].endswith("\u2026")
+    assert render._wrap(d, "Lamp", 40, 460) == ["Lamp"]
+    assert render.fmt_watts(1452) == "1.45 kW" and render.fmt_watts(32) == "32 W" and render.fmt_watts(None) == "--"
 
 
 def test_refresh_keeps_a_toggle_made_while_it_ran():

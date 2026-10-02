@@ -595,8 +595,37 @@ def _fit(d: ImageDraw.ImageDraw, s: str, size_: int, width: float) -> str:
     return s.rstrip() + "…"
 
 
+def _wrap(d: ImageDraw.ImageDraw, s: str, size_: int, width: float, max_lines: int = 2) -> list[str]:
+    """`s` broken at spaces into at most `max_lines` lines of bold `size_`; the last is cut with an ellipsis if needed."""
+    f = font(size_, True)
+    lines: list[str] = []
+    words = s.split()
+    while words and len(lines) < max_lines:
+        line = words.pop(0)
+        while words and d.textlength(f"{line} {words[0]}", font=f) <= width:
+            line += " " + words.pop(0)
+        lines.append(line)
+    if words:
+        lines[-1] = _fit(d, f"{lines[-1]} {' '.join(words)}", size_, width)
+    return [_fit(d, line, size_, width) for line in lines] or [""]
+
+
+def fmt_watts(w: float | None) -> str:
+    if w is None:
+        return "--"
+    return f"{w / 1000:.2f} kW" if w >= 1000 else f"{w:.0f} W"
+
+
+def fmt_kwh(v: float) -> str:
+    return f"{v:.2f} kWh" if v < 10 else f"{v:,.1f} kWh"
+
+
 def _plug_tile(d: ImageDraw.ImageDraw, box, plug: Plug) -> None:
-    """ON is solid black, OFF is outlined, unreachable is pale gray."""
+    """ON is solid black, OFF is outlined, unreachable is pale gray.
+
+    Top: what it powers, then the name (two lines). Bottom: ON/OFF, and the
+    plug's power now with its energy today and this month.
+    """
     x0, y0, x1, y1 = box
     on = plug.on is True
     if plug.on is None:
@@ -604,11 +633,22 @@ def _plug_tile(d: ImageDraw.ImageDraw, box, plug: Plug) -> None:
     else:
         bg, fg, sub = (BLACK, WHITE, LIGHT) if on else (WHITE, BLACK, DARK)
     d.rounded_rectangle(box, radius=18, fill=bg, outline=BLACK, width=4)
-    _text(d, (x0 + 28, y0 + 28), _fit(d, plug.name, 44, x1 - x0 - 56), 44, bold=True, fill=fg)
-    state = "OFFLINE" if plug.on is None else ("ON" if on else "OFF")
-    _text(d, (x0 + 28, y1 - 34), state, 64 if plug.on is None else 110, bold=True, fill=fg, anchor="ls")
-    if plug.on is not None:
-        _text(d, (x1 - 28, y1 - 38), f"tap to turn {'off' if on else 'on'}", 26, fill=sub, anchor="rs")
+    y = y0 + 24
+    if plug.kind:
+        _text(d, (x0 + 28, y), plug.kind.upper(), 24, bold=True, fill=sub)
+        y += 36
+    for line in _wrap(d, plug.name, 40, x1 - x0 - 56):
+        _text(d, (x0 + 28, y), line, 40, bold=True, fill=fg)
+        y += 48
+    if plug.on is None:
+        _text(d, (x0 + 28, y1 - 30), "OFFLINE", 60, bold=True, fill=fg, anchor="ls")
+        return
+    _text(d, (x0 + 28, y1 - 30), "ON" if on else "OFF", 84, bold=True, fill=fg, anchor="ls")
+    if plug.power_w is not None:
+        _text(d, (x1 - 28, y1 - 100), fmt_watts(plug.power_w), 48, bold=True, fill=fg, anchor="rs")
+    for i, (v, when) in enumerate(((plug.today_kwh, "today"), (plug.month_kwh, "this month"))):
+        if v is not None:
+            _text(d, (x1 - 28, y1 - 62 + i * 32), f"{fmt_kwh(v)} {when}", 24, fill=sub, anchor="rs")
 
 
 def render_lights(plugs: list[Plug], now: datetime, tz, layout: str = "portrait", kindle: KindleBattery | None = None) -> Image.Image:
@@ -621,7 +661,8 @@ def render_lights(plugs: list[Plug], now: datetime, tz, layout: str = "portrait"
     for box, plug in zip(plug_boxes(layout, len(plugs)), plugs):
         _plug_tile(d, box, plug)
     reachable = sum(p.on is not None for p in plugs)
-    _text(d, (w - M, h - 16), f"Kasa plugs  \u00b7  {reachable} of {len(plugs)} reachable", 22, fill=DARK, anchor="rs")
+    total = sum(p.power_w for p in plugs if p.on is not None and p.power_w is not None)
+    _text(d, (w - M, h - 16), f"Kasa plugs  \u00b7  {fmt_watts(total)} total  \u00b7  {reachable} of {len(plugs)} reachable", 22, fill=DARK, anchor="rs")
     return quantize(img)
 
 

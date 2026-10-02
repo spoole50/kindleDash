@@ -45,7 +45,7 @@ class State:
             for page, msg in (("solar", "Waiting for data…"), ("lights", "Connecting to plugs…"))
             for lay in render.LAYOUTS
         }
-        self.plugs = KasaPlugs(settings.kasa_hosts)
+        self.plugs = KasaPlugs(settings.kasa_hosts, dict(settings.kasa_kinds))
         self.lights_polled = False
         self.last_render: datetime | None = None
         self.last_success: datetime | None = None
@@ -393,7 +393,7 @@ def admin_html(state: State, done: str) -> str:
     )
     plugs = "".join(
         f'<form method="post" action="/admin/plug?host={e(p.host)}"><button class="plug {"on" if p.on else "off"}"'
-        f'{" disabled" if p.on is None else ""}><b>{e(p.name)}</b> <span>{"offline" if p.on is None else ("ON" if p.on else "OFF")}</span></button></form>'
+        f'{" disabled" if p.on is None else ""}><b>{e(p.name)}</b> <span>{"offline" if p.on is None else ("ON" if p.on else "OFF")}{f" &middot; {render.fmt_watts(p.power_w)}" if p.on is not None and p.power_w is not None else ""}</span></button></form>'
         for p in state.plugs.plugs
     ) or "<p>No plugs configured (KASA_HOSTS).</p>"
     note = {"rotate": "Rotate requested. The Kindle turns at its next check (within a minute).", "plug": "Plug toggled."}.get(done, "")

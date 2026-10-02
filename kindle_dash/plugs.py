@@ -23,14 +23,27 @@ class Plug:
     host: str
     name: str
     on: bool | None
+    kind: str = ""  # what's plugged in, from KASA_HOSTS ("light", "ev charger", ...)
+    power_w: float | None = None  # energy monitoring, where the plug has it
+    today_kwh: float | None = None
+    month_kwh: float | None = None
+
+
+def _reading(dev, feature: str) -> float | None:
+    f = dev.features.get(feature)
+    try:
+        return None if f is None or f.value is None else float(f.value)
+    except Exception:
+        return None
 
 
 class KasaPlugs:
-    def __init__(self, hosts: tuple[str, ...]):
+    def __init__(self, hosts: tuple[str, ...], kinds: dict[str, str] | None = None):
         self.hosts = hosts
+        self.kinds = kinds or {}
         self._devices: dict[str, object] = {}  # host -> kasa Device, once connected
         self._names: dict[str, str] = {}  # last known alias, kept while unreachable
-        self.plugs: list[Plug] = [Plug(h, h, None) for h in hosts]
+        self.plugs: list[Plug] = [Plug(h, h, None, self.kinds.get(h, "")) for h in hosts]
         self._toggles: dict[str, int] = {}  # per host, bumped by each toggle
 
     async def _device(self, host: str):
@@ -49,11 +62,20 @@ class KasaPlugs:
             dev = await self._device(host)
             await dev.update()
             self._names[host] = (dev.alias or "").strip() or host
-            return Plug(host, self._names[host], bool(dev.is_on))
+            return Plug(
+                host,
+                self._names[host],
+                bool(dev.is_on),
+                self.kinds.get(host, ""),
+                # whole watts: finer would redraw the page for noise
+                None if (w := _reading(dev, "current_consumption")) is None else float(round(w)),
+                _reading(dev, "consumption_today"),
+                _reading(dev, "consumption_this_month"),
+            )
         except Exception as exc:
             log.warning("plug %s: %s", host, exc)
             await self._forget(host)  # reconnect from scratch next time
-            return Plug(host, self._names.get(host, host), None)
+            return Plug(host, self._names.get(host, host), None, self.kinds.get(host, ""))
 
     async def _forget(self, host: str) -> None:
         dev = self._devices.pop(host, None)
