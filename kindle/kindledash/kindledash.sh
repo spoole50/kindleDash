@@ -47,6 +47,13 @@ read_page() {
 read_page
 echo "$PAGE" > "$PAGE_FILE"
 
+# Back to HOME_PAGE after IDLE_RETURN seconds without a tap (0 = stay put).
+# Defaults here so an older config.sh still gets them.
+HOME_PAGE="${HOME_PAGE:-solar}"
+IDLE_RETURN="${IDLE_RETURN-300}"
+ACTIVITY_FILE="$STATE/activity"  # time of the last tap, written by the touch watcher
+date +%s > "$ACTIVITY_FILE"
+
 # The rotation after the current one in $ROTATIONS, wrapping around.
 next_rotation() {
     first=""; take=""; nxt=""
@@ -119,6 +126,7 @@ button_watcher() {
 # 204 means nothing was hit. Page switches and redraws are the main loop's
 # job (ALRM); a flash with neither is undone by redrawing the current image.
 send_tap() {
+    date +%s > "$ACTIVITY_FILE"
     rot="$(cat "$ROT_FILE" 2>/dev/null)"; pg="$(cat "$PAGE_FILE" 2>/dev/null)"
     code="$(curl -s -o "$STATE/tap.txt" -w '%{http_code}' -X POST -H "X-Kindle-Token: $TOKEN" \
         --connect-timeout "$CONNECT_TIMEOUT" -m 15 "$SERVER/tap?x=$1&y=$2&rotate=${rot:-0}&page=${pg:-solar}")"
@@ -268,6 +276,14 @@ while true; do
         log "rotated to $ROTATE: $FULL_URL"; sync
         last_sum=""  # full redraw of the new layout
         draws=0
+    fi
+    if [ "${IDLE_RETURN:-0}" -gt 0 ] && [ "$PAGE" != "$HOME_PAGE" ]; then
+        idle=$(( $(date +%s) - $(cat "$ACTIVITY_FILE" 2>/dev/null || echo 0) ))
+        if [ "$idle" -ge "$IDLE_RETURN" ]; then
+            log "idle ${idle}s on $PAGE -> $HOME_PAGE"
+            echo "$HOME_PAGE" > "$PAGE_FILE"
+            refresh_now=1
+        fi
     fi
     if [ -n "$refresh_now" ]; then
         refresh_now=""

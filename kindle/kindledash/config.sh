@@ -9,6 +9,11 @@ TOKEN=""
 # TAP_MAX_MS count as taps.
 TAPS=1
 TAP_MAX_MS=1000
+# After IDLE_RETURN seconds without a tap, go back to HOME_PAGE (0 = stay on
+# whatever page was last chosen). Checked once per INTERVAL, so it can take up
+# to INTERVAL longer.
+HOME_PAGE=solar
+IDLE_RETURN=300
 # Orientations to cycle through. A 2 s touch-and-hold (or the Rotate button at
 # $SERVER/admin) moves to the next one; the current one is remembered in
 # kindledash/rotation on the USB drive.

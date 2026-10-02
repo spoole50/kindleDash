@@ -218,6 +218,10 @@ out what's under it, using the same geometry it drew with, and replies:
 The 2 s touch-and-hold still rotates. The current page is saved in
 `kindledash/page`, next to `kindledash/rotation`.
 
+After `IDLE_RETURN` seconds (300) without a tap, the Kindle goes back to
+`HOME_PAGE` (`solar`). It checks once per `INTERVAL`, so the switch can come up to a
+minute later. Set `IDLE_RETURN=0` to stay on the last chosen page.
+
 The server logs every tap as `tap raw=… panel=… image=… -> action` (`docker logs kindle-solar-dashboard`).
 If taps land in the wrong place, the touch panel's axes don't match the screen.
 Tap near the top-left and bottom-right corners in portrait, compare `raw` with where
