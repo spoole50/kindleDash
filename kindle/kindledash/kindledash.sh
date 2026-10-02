@@ -47,12 +47,17 @@ read_page() {
 read_page
 echo "$PAGE" > "$PAGE_FILE"
 
-# Back to HOME_PAGE after IDLE_RETURN seconds without a tap (0 = stay put).
-# Defaults here so an older config.sh still gets them.
+# Back to HOME_PAGE after IDLE_RETURN seconds without a tap (0 = stay put),
+# turning the backlight off as it goes if IDLE_BACKLIGHT_OFF=1. The next tap
+# then only turns the light back on. Defaults here so an older config.sh
+# still gets them.
 HOME_PAGE="${HOME_PAGE:-solar}"
 IDLE_RETURN="${IDLE_RETURN-300}"
+IDLE_BACKLIGHT_OFF="${IDLE_BACKLIGHT_OFF-1}"
 ACTIVITY_FILE="$STATE/activity"  # time of the last tap, written by the touch watcher
+DARK_FILE="$STATE/dark"          # exists while the light is off from going idle
 date +%s > "$ACTIVITY_FILE"
+rm -f "$DARK_FILE"
 
 # The rotation after the current one in $ROTATIONS, wrapping around.
 next_rotation() {
@@ -192,7 +197,12 @@ touch_watcher() {
                     logged=$((logged + 1))
                     log "touch ${ms}ms down x=$sx y=$sy up x=$x y=$y"
                 fi
-                if [ "$TAPS" = "1" ] && [ "$ms" -lt "$TAP_MAX_MS" ]; then
+                if [ "$ms" -lt "$TAP_MAX_MS" ] && [ -f "$DARK_FILE" ]; then
+                    # dark from going idle: this tap only brings the light back
+                    rm -f "$DARK_FILE"
+                    date +%s > "$ACTIVITY_FILE"
+                    backlight_on
+                elif [ "$TAPS" = "1" ] && [ "$ms" -lt "$TAP_MAX_MS" ]; then
                     send_tap "${sx:-$x}" "${sy:-$y}"
                 elif [ "$TOUCH_ROTATE" = "1" ] && [ "$ms" -ge "$TOUCH_HOLD_MS" ] && [ "$ms" -le "$TOUCH_MAX_MS" ] && in_touch_area; then
                     log "touch hold ${ms}ms at x=$sx y=$sy -> rotate"
@@ -283,6 +293,10 @@ while true; do
             log "idle ${idle}s on $PAGE -> $HOME_PAGE"
             echo "$HOME_PAGE" > "$PAGE_FILE"
             refresh_now=1
+            if [ "$IDLE_BACKLIGHT_OFF" = "1" ] && [ "$(lipc-get-prop com.lab126.powerd flIntensity 2>/dev/null)" -gt 0 ] 2>/dev/null; then
+                backlight_off
+                touch "$DARK_FILE"
+            fi
         fi
     fi
     if [ -n "$refresh_now" ]; then

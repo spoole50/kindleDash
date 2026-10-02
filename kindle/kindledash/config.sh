@@ -14,6 +14,9 @@ TAP_MAX_MS=1000
 # to INTERVAL longer.
 HOME_PAGE=solar
 IDLE_RETURN=300
+# 1 = also turn the backlight off when going back to HOME_PAGE; the next tap
+# then only turns it back on (the power button still toggles it as usual)
+IDLE_BACKLIGHT_OFF=1
 # Orientations to cycle through. A 2 s touch-and-hold (or the Rotate button at
 # $SERVER/admin) moves to the next one; the current one is remembered in
 # kindledash/rotation on the USB drive.

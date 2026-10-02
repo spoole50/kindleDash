@@ -34,15 +34,22 @@ restore_ui() {
 }
 
 # Backlight: 0..flMaxIntensity via powerd. Remembers the last non-zero level.
-backlight_toggle() {
+backlight_off() {
     cur=$(lipc-get-prop com.lab126.powerd flIntensity 2>/dev/null)
-    if [ "${cur:-0}" -gt 0 ]; then
-        echo "$cur" > "$STATE/backlight"
-        lipc-set-prop com.lab126.powerd flIntensity 0
-        log "backlight off (was $cur)"
-    else
-        lvl=$(cat "$STATE/backlight" 2>/dev/null)
-        lipc-set-prop com.lab126.powerd flIntensity "${lvl:-12}"
-        log "backlight on ($lvl)"
-    fi
+    [ "${cur:-0}" -gt 0 ] || return 0
+    echo "$cur" > "$STATE/backlight"
+    lipc-set-prop com.lab126.powerd flIntensity 0
+    log "backlight off (was $cur)"
+}
+
+backlight_on() {
+    lvl=$(cat "$STATE/backlight" 2>/dev/null)
+    lipc-set-prop com.lab126.powerd flIntensity "${lvl:-12}"
+    log "backlight on (${lvl:-12})"
+}
+
+backlight_toggle() {
+    rm -f "$STATE/dark"  # the idle switch-off (kindledash.sh) is over either way
+    cur=$(lipc-get-prop com.lab126.powerd flIntensity 2>/dev/null)
+    if [ "${cur:-0}" -gt 0 ]; then backlight_off; else backlight_on; fi
 }
