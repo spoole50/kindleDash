@@ -17,6 +17,15 @@ done
 
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
+# Keep the tail of the system log on the USB drive: /var/log is wiped by a reboot,
+# so this is the only record of what happened just before one.
+SYSLOG_COPY=/mnt/us/kindledash/messages.log
+save_syslog() {
+    { echo "=== $(date '+%F %T') uptime: $(cut -d' ' -f1 /proc/uptime)s"
+      tail -n 300 /var/log/messages 2>/dev/null || logread 2>/dev/null | tail -n 300
+    } > "$SYSLOG_COPY.tmp" && mv "$SYSLOG_COPY.tmp" "$SYSLOG_COPY"
+}
+
 # keep the log small
 [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 200000 ] && tail -n 200 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
 
@@ -56,7 +65,8 @@ if [ "$STOP_FRAMEWORK" = "1" ]; then
     sleep 2
 fi
 "$FBINK" -q -c -f 2>/dev/null
-log "started: $FULL_URL (fbink: $FBINK)"
+log "started: $FULL_URL (fbink: $FBINK) uptime=$(cut -d' ' -f1 /proc/uptime)s"
+[ -f "$SYSLOG_COPY" ] && mv "$SYSLOG_COPY" "$SYSLOG_COPY.prev"  # what preceded the last reboot
 
 last_sum=""
 draws=0
@@ -74,6 +84,7 @@ while true; do
                 "$FBINK" -q -g file="$PNG" 2>>"$LOG"         # partial refresh
             fi
             last_sum="$sum"
+            log "drew (draws=$draws) uptime=$(cut -d' ' -f1 /proc/uptime)s powerd=$(lipc-get-prop com.lab126.powerd state 2>/dev/null)"
         fi
         [ -n "$fail_since" ] && log "recovered"
         fail_since=""
@@ -86,5 +97,6 @@ while true; do
         fi
         wifi_up || reconnect_wifi
     fi
+    save_syslog
     sleep "$INTERVAL"
 done
