@@ -121,15 +121,16 @@ The log is at `/mnt/us/kindledash/kindledash.log`.
 
 While the dashboard runs, the loop reads the power key directly (`/dev/input/event0`):
 
-- **quick press**: toggles the backlight on or off, remembering the previous level
-- **hold for 2 s**: returns to the library as soon as 2 s is reached (no need to let go). It restarts the Kindle UI and opens Home, which can take up to about a minute.
+- **press**: toggles the backlight on or off, remembering the previous level
+- **double-press** (two presses within 1.5 s): returns to the library. The two toggles cancel out, so the light ends where it started. It restarts the Kindle UI and opens Home, which can take up to about a minute.
 
-Every press is logged with its duration, and the log is saved to disk right away. Set `POWER_BUTTON=0` or change `LONG_PRESS_S` in `config.sh`.
-Don't hold the button for 9 s or more: that's the Kindle's own restart.
+On this Kindle (PW11, `bd71828-pwrkey`), the power-management chip only reports "pushed", with press and release at the same instant. How long the button is held can't be measured, which is why this uses press counting rather than a long press.
+**Don't hold the button down:** a hold of 15 s or more forces a hardware restart.
+Every press is logged and the log is saved to disk right away. Set `POWER_BUTTON=0` or change `DOUBLE_PRESS_MS` in `config.sh`.
 
 ### Stopping it
 
-- **Hold the power button for about 2 s** (see above).
+- **Double-press the power button** (see above).
 - **Over SSH:** `sh "/mnt/us/documents/Solar Dashboard - Stop.sh"`.
 - **Last resort:** hold the power button until the Kindle restarts. Nothing autostarts.
 
