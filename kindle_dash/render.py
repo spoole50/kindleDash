@@ -181,7 +181,7 @@ _setup_mpl()
 def _fig(w: int, h: int):
     fig = plt.figure(figsize=(w / 100, h / 100), dpi=100, facecolor="white")
     # fixed pixel margins so tick labels never clip, whatever the height
-    left, bottom, top, right = 96, 40, 8, 16
+    left, bottom, top, right = 96, 40, 8, 36  # right: room for a tick label at the edge
     ax = fig.add_axes((left / w, bottom / h, 1 - (left + right) / w, 1 - (bottom + top) / h))
     ax.set_facecolor("white")
     for side in ("top", "right", "left"):
