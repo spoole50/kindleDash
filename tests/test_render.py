@@ -124,15 +124,19 @@ def test_kindle_battery_report_reaches_header_and_status():
     with TestClient(app) as client:
         state.update(lambda: snap)
         plain = state.images["portrait"]
+        plain_land = client.get("/landscape.png?rotate=270").content
         assert client.get("/status").json()["kindle"] is None
         # malformed reports are ignored, never break the image
         assert client.get("/portrait.png?rotate=0&battery=&charging=").status_code == 200
         assert client.get("/portrait.png?battery=abc").status_code == 200
         assert state.kindle is None
-        assert client.get("/landscape.png?rotate=270&battery=64&charging=1").status_code == 200
+        r = client.get("/landscape.png?rotate=270&battery=64&charging=1")
         assert client.get("/status").json()["kindle"]["level"] == 64
-        state.update(lambda: snap)
+        # the change is in the image served with the report, not a poll later
+        assert r.content != plain_land
+        assert client.get("/landscape.png?rotate=270&battery=64&charging=1").content == r.content
         assert state.images["portrait"].tobytes() != plain.tobytes()
+        state.update(lambda: snap)
         # header only: the rest of the image is unchanged
         assert state.images["portrait"].crop((0, 130, 1236, 1648)).tobytes() == plain.crop((0, 130, 1236, 1648)).tobytes()
         state.kindle_at = datetime(2020, 1, 1, tzinfo=timezone.utc)  # long ago -> hidden again

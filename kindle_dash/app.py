@@ -28,6 +28,7 @@ class State:
     def __init__(self, settings: Settings):
         self.s = settings
         self.lock = threading.Lock()
+        self.render_lock = threading.Lock()  # one render at a time: poll cycle or battery change
         self.snapshot: Snapshot | None = None
         # per layout: last render from fresh data, and what's being served
         self.good_images: dict[str, Image.Image] = {}
@@ -54,15 +55,21 @@ class State:
             self.images = images
             self._png = {}
 
-    def report_kindle(self, battery: str | None, charging: str | None) -> None:
-        """Record a battery report; malformed values are ignored so the image is still served."""
+    def report_kindle(self, battery: str | None, charging: str | None) -> bool:
+        """Record a battery report; True if it changes what the header shows.
+
+        Malformed values are ignored so the image is still served.
+        """
         try:
             level = int(battery)
         except (TypeError, ValueError):
-            return
-        if 0 <= level <= 100:
-            self.kindle = render.KindleBattery(level, charging in ("1", "true", "yes"))
-            self.kindle_at = self.now()
+            return False
+        if not 0 <= level <= 100:
+            return False
+        shown = self.kindle_battery()
+        self.kindle = render.KindleBattery(level, charging in ("1", "true", "yes"))
+        self.kindle_at = self.now()
+        return self.kindle != shown
 
     def kindle_battery(self) -> render.KindleBattery | None:
         """The last report, if the Kindle has fetched recently."""
@@ -70,27 +77,42 @@ class State:
             return self.kindle
         return None
 
+    def _render_all(self, snap: Snapshot) -> dict[str, Image.Image]:
+        kindle = self.kindle_battery()
+        return {
+            lay: render.render(snap, self.s.zone, self.s.chart_hours, self.s.spark_hours, layout=lay, kindle=kindle)
+            for lay in render.LAYOUTS
+        }
+
+    def rerender(self) -> None:
+        """Redraw the current data, e.g. so a new battery report shows in the image the Kindle is fetching."""
+        with self.render_lock:
+            if self.snapshot is None or self.stale_since is not None:
+                return  # nothing fresh to redraw; the next good poll picks the report up
+            self.good_images = self._render_all(self.snapshot)
+            self._publish(self.good_images)
+
     def update(self, fetch) -> None:
         """One poll cycle. `fetch` returns a Snapshot or raises."""
         try:
             snap = fetch()
-            kindle = self.kindle_battery()
-            imgs = {
-                lay: render.render(snap, self.s.zone, self.s.chart_hours, self.s.spark_hours, layout=lay, kindle=kindle)
-                for lay in render.LAYOUTS
-            }
+            with self.render_lock:
+                imgs = self._render_all(snap)
+                self._apply(snap, imgs)
         except Exception as exc:  # keep serving the last good image
             log.warning("refresh failed: %s", exc)
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            if self.stale_since is None:
-                self.stale_since = self.last_success or self.now()
-                if self.good_images:
-                    self._publish({lay: render.stale_badge(im, self.stale_since, self.s.zone) for lay, im in self.good_images.items()})
-                else:
-                    self._publish(
-                        {lay: render.placeholder("InfluxDB unavailable", self.now(), self.s.zone, lay) for lay in render.LAYOUTS}
-                    )
-            return
+            with self.render_lock:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                if self.stale_since is None:
+                    self.stale_since = self.last_success or self.now()
+                    if self.good_images:
+                        self._publish({lay: render.stale_badge(im, self.stale_since, self.s.zone) for lay, im in self.good_images.items()})
+                    else:
+                        self._publish(
+                            {lay: render.placeholder("InfluxDB unavailable", self.now(), self.s.zone, lay) for lay in render.LAYOUTS}
+                        )
+
+    def _apply(self, snap: Snapshot, imgs: dict[str, Image.Image]) -> None:
         self.snapshot = snap
         self.good_images = imgs
         self.last_success = self.last_render = snap.fetched_at
@@ -144,7 +166,8 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True) 
     def serve(request: Request, layout: str, rotate: int) -> Response:
         if rotate not in (0, 90, 180, 270):
             raise HTTPException(400, "rotate must be 0, 90, 180 or 270")
-        state.report_kindle(request.query_params.get("battery"), request.query_params.get("charging"))
+        if state.report_kindle(request.query_params.get("battery"), request.query_params.get("charging")):
+            state.rerender()
         data, etag = state.png(layout, rotate)
         headers = {"ETag": etag, "Cache-Control": "no-cache"}
         if request.headers.get("if-none-match") == etag:
