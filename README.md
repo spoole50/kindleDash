@@ -314,9 +314,10 @@ The 2 s touch-and-hold still rotates. The current page is saved in
 After `IDLE_RETURN` seconds (300) without a tap, the Kindle goes back to
 `HOME_PAGE` (`solar`). It checks once per `INTERVAL`, so the switch can come up to a
 minute later. Set `IDLE_RETURN=0` to stay on the last chosen page.
-It also turns the backlight off as it goes back (`IDLE_BACKLIGHT_OFF=1`). The next tap
-only turns the light back on and doesn't press anything. The power button toggles
-the light as usual.
+It also turns the backlight off after `IDLE_RETURN` seconds without a tap or power
+press, on any page, Solar included (`IDLE_BACKLIGHT_OFF=1`). The next tap only turns
+the light back on and doesn't press anything. The power button toggles the light as
+usual, and a light turned on with it stays on for another `IDLE_RETURN` seconds.
 
 The server logs every tap as `tap raw=… panel=… image=… -> action` (`docker logs kindle-solar-dashboard`).
 If taps land in the wrong place, the touch panel's axes don't match the screen.

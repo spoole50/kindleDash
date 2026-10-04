@@ -56,7 +56,19 @@ IDLE_RETURN="${IDLE_RETURN-300}"
 IDLE_BACKLIGHT_OFF="${IDLE_BACKLIGHT_OFF-1}"
 ACTIVITY_FILE="$STATE/activity"  # time of the last tap, written by the touch watcher
 DARK_FILE="$STATE/dark"          # exists while the light is off from going idle
-date +%s > "$ACTIVITY_FILE"
+# Written by the watchers while the main loop reads it, so write a whole new
+# file and rename it: "date > file" leaves it empty for a moment, and an empty
+# read once made $(( )) fail, which kills the script.
+mark_activity() {
+    date +%s > "$ACTIVITY_FILE.$1" && mv "$ACTIVITY_FILE.$1" "$ACTIVITY_FILE"
+}
+# Seconds since the last tap or power press (0 if the file can't be read)
+idle_seconds() {
+    now=$(date +%s); last=$(cat "$ACTIVITY_FILE" 2>/dev/null)
+    case "$last" in ''|*[!0-9]*) last=$now ;; esac
+    echo $(( now - last ))
+}
+mark_activity main
 rm -f "$DARK_FILE"
 
 # The rotation after the current one in $ROTATIONS, wrapping around.
@@ -113,6 +125,7 @@ button_watcher() {
         [ $# -eq 4 ] || { sleep 1; continue; }
         [ "$3" = "$KEY_POWER_WORD" ] && [ "$4" = "1" ] || continue
         backlight_toggle
+        mark_activity button  # a light turned on by hand stays on for IDLE_RETURN
         if [ -n "$last_s" ] && [ $(( $1 - last_s )) -le 10 ] &&
            [ $(( ($1 - last_s) * 1000 + ($2 - last_us) / 1000 )) -le "$DOUBLE_PRESS_MS" ]; then
             "$FBINK" -q -c -f -m -y 10 "Returning to the library..." 2>/dev/null
@@ -131,7 +144,7 @@ button_watcher() {
 # 204 means nothing was hit. Page switches and redraws are the main loop's
 # job (ALRM); a flash with neither is undone by redrawing the current image.
 send_tap() {
-    date +%s > "$ACTIVITY_FILE"
+    mark_activity touch
     rot="$(cat "$ROT_FILE" 2>/dev/null)"; pg="$(cat "$PAGE_FILE" 2>/dev/null)"
     code="$(curl -s -o "$STATE/tap.txt" -w '%{http_code}' -X POST -H "X-Kindle-Token: $TOKEN" \
         --connect-timeout "$CONNECT_TIMEOUT" -m 15 "$SERVER/tap?x=$1&y=$2&rotate=${rot:-0}&page=${pg:-solar}")"
@@ -148,9 +161,10 @@ send_tap() {
             redraw) wake=1 ;;
         esac
     done < "$STATE/tap.txt"
-    if [ -n "$wake" ]; then
-        kill -ALRM "$MAIN_PID"
-    elif [ -n "$flashed" ]; then
+    if [ -n "$wake" ] && ! kill -ALRM "$MAIN_PID" 2>/dev/null; then
+        log "main loop is gone; tap can't switch pages"
+        "$FBINK" -q -g file="$PNG" 2>>"$LOG"  # at least undo the flash
+    elif [ -z "$wake" ] && [ -n "$flashed" ]; then
         "$FBINK" -q -g file="$PNG" 2>>"$LOG"
     fi
 }
@@ -200,7 +214,7 @@ touch_watcher() {
                 if [ "$ms" -lt "$TAP_MAX_MS" ] && [ -f "$DARK_FILE" ]; then
                     # dark from going idle: this tap only brings the light back
                     rm -f "$DARK_FILE"
-                    date +%s > "$ACTIVITY_FILE"
+                    mark_activity touch
                     backlight_on
                 elif [ "$TAPS" = "1" ] && [ "$ms" -lt "$TAP_MAX_MS" ]; then
                     send_tap "${sx:-$x}" "${sy:-$y}"
@@ -287,16 +301,18 @@ while true; do
         last_sum=""  # full redraw of the new layout
         draws=0
     fi
-    if [ "${IDLE_RETURN:-0}" -gt 0 ] && [ "$PAGE" != "$HOME_PAGE" ]; then
-        idle=$(( $(date +%s) - $(cat "$ACTIVITY_FILE" 2>/dev/null || echo 0) ))
-        if [ "$idle" -ge "$IDLE_RETURN" ]; then
-            log "idle ${idle}s on $PAGE -> $HOME_PAGE"
+    if [ "${IDLE_RETURN:-0}" -gt 0 ] && [ "$(idle_seconds)" -ge "$IDLE_RETURN" ]; then
+        if [ "$PAGE" != "$HOME_PAGE" ]; then
+            log "idle $(idle_seconds)s on $PAGE -> $HOME_PAGE"
             echo "$HOME_PAGE" > "$PAGE_FILE"
             refresh_now=1
-            if [ "$IDLE_BACKLIGHT_OFF" = "1" ] && [ "$(lipc-get-prop com.lab126.powerd flIntensity 2>/dev/null)" -gt 0 ] 2>/dev/null; then
-                backlight_off
-                touch "$DARK_FILE"
-            fi
+        fi
+        # on any page, once per idle spell (a tap or power press ends it)
+        if [ "$IDLE_BACKLIGHT_OFF" = "1" ] && [ ! -f "$DARK_FILE" ] &&
+           [ "$(lipc-get-prop com.lab126.powerd flIntensity 2>/dev/null)" -gt 0 ] 2>/dev/null; then
+            log "idle $(idle_seconds)s -> backlight off"
+            backlight_off
+            touch "$DARK_FILE"
         fi
     fi
     if [ -n "$refresh_now" ]; then
