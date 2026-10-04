@@ -16,7 +16,7 @@ Bluetti tab (`/portrait.png?page=bluetti`):
 
 ![bluetti](docs/sample-bluetti.png)
 
-Power tab (`/portrait.png?page=lights`):
+Plugs tab (`/portrait.png?page=lights`):
 
 ![lights](docs/sample-lights.png)
 
@@ -92,9 +92,9 @@ isn't working. Tap the clock (on any page) for the health page: a row per subsys
 
 Checks run every 15 s. `/admin` lists the same checks, and `/status` has them as JSON.
 
-### Power page
+### Plugs page
 
-The **POWER** tab (`page=lights` in URLs) shows a big tile per Kasa smart plug (`KASA_HOSTS`): solid
+The **PLUGS** tab (`page=lights` in URLs) shows a big tile per Kasa smart plug (`KASA_HOSTS`): solid
 black is ON, outlined is OFF, pale gray is unreachable. Tap a tile to toggle it.
 Each tile shows what the plug powers (from `KASA_HOSTS`), its name on up to two lines,
 and, for plugs with energy monitoring like the EP25, the power now and kWh today and

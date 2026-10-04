@@ -315,7 +315,7 @@ class _Ctx:
 
 
 # Pages, in tab order: (name used in URLs and taps, tab label)
-PAGES = (("solar", "SOLAR"), ("bluetti", "BLUETTI"), ("lights", "POWER"), ("tv", "TV"), ("cameras", "CAMERA"))  # "lights" stays the URL name; Kindles remember it
+PAGES = (("solar", "SOLAR"), ("bluetti", "BLUETTI"), ("lights", "PLUGS"), ("tv", "TV"), ("cameras", "CAMERA"))  # "lights" stays the URL name; Kindles remember it
 HIDDEN_PAGES = ("health",)  # no tab: opened by tapping the clock
 HEADER_RULE_Y = 126  # the rule under the header; tabs sit above it
 TAB_SIZE, TAB_PAD, TAB_GAP = 32, 18, 12  # five tabs, clear of the clock and date in portrait
