@@ -89,8 +89,52 @@ isn't working. Tap the clock (on any page) for the health page: a row per subsys
 | Kasa plugs | any plug unreachable |
 | Apple TV | not paired, or can't connect |
 | Camera, per camera | the last snapshot failed |
+| Car (Blue Link) | the last read from Hyundai failed |
 
 Checks run every 15 s. `/admin` lists the same checks, and `/status` has them as JSON.
+
+### Car page
+
+The **CAR** tab shows the Hyundai on the Blue Link account in `BLUELINK_USER`
+(US Blue Link, through [hyundai_kia_connect_api](https://github.com/Hyundai-Kia-Connect/hyundai_kia_connect_api);
+tested with a 2023 Ioniq 5, which is older than the 2025 head unit that the libraries struggle with):
+
+- battery %, range, and a gauge marked at the AC charge limit when that's under 100%
+- plugged in / charging, the charging power and time to the limit, or the AC and DC limits when not charging
+- locked or **UNLOCKED** (white on black), and any door, window, liftgate, frunk or charge port that's open
+- climate on or off, with the temperature it's set to, and defrost
+- the 12 V battery, tire warning and pressures, and the odometer
+- a **REFRESH FROM CAR** button, with when the car last reported
+
+**Controls**, all two taps (the first turns the tile into **TAP AGAIN TO …** for 10 seconds,
+like the EV charger plug; tapping anything else cancels):
+
+| Tap | Does |
+|---|---|
+| the LOCKS tile | lock, or unlock |
+| the CLIMATE tile | start climate at `CAR_CLIMATE_TEMP` (72°) for `CAR_CLIMATE_MINUTES` (10), or stop it |
+| START / STOP CHARGING | start or stop charging (only while plugged in) |
+
+A command shows **SENDING…** on its tile until the car answers, which takes up to about a minute.
+Once the car confirms it, the page shows the change at once. Hyundai's confirmation check
+fails for some commands that work (lock and unlock on a 2023 Ioniq 5), so then the dashboard
+re-reads Hyundai's copy of the car's status every 10 s, for up to 70 s, until it shows the change. The footer says how it went
+for 10 minutes: done, refused by the car, or no answer.
+
+Hyundai keeps a copy of what the car last reported (after a drive, a charge or a wake), and
+the page reads that copy every `CAR_REFRESH_SECONDS` (30 min). The car stays asleep for those reads.
+Tapping the button twice (**TAP AGAIN TO WAKE THE CAR**) wakes the car for new numbers, which takes
+up to a minute. That's allowed at most every `CAR_WAKE_MIN_SECONDS` (30 min), and not while the car's
+last report is under 10 minutes old (it's just been driven, charged or sent a command, so Hyundai's
+copy is already new). Otherwise one tap re-reads Hyundai's copy, and the button says when it can wake the car.
+Waking runs the car's modem off the 12 V battery and counts against Hyundai's daily limits, so nothing
+reaches the car on a timer: only those two taps and the controls below do.
+The library's usual read also asks the car where it is after every drive; the dashboard switches
+that off, so the car isn't woken for it and its location isn't fetched or kept.
+
+If Hyundai refuses the login, the dashboard waits 6 hours before trying again, since a few bad
+logins lock the account. Fix `.env` and restart the container to try at once.
+The password and PIN are in `.env`, and the reads go out to Hyundai's servers over the internet.
 
 ### Plugs page
 
@@ -192,6 +236,10 @@ status, a **Rotate Kindle 90°** button, a button per plug, and Apple TV pairing
 | `ATV_HOST` | – | Apple TV IP for the TV page (give it a DHCP reservation) |
 | `ATV_APPS` | – | up to 4 app shortcuts, `Name=bundle.id,...`; `/admin` lists the installed ones |
 | `ATV_CREDENTIALS` | `/data/appletv.json` | where pairing is saved (the `data` volume) |
+| `BLUELINK_USER` / `BLUELINK_PASSWORD` / `BLUELINK_PIN` | – | MyHyundai login and 4-digit Blue Link PIN (US) for the car page |
+| `CAR_REFRESH_SECONDS` | `1800` | how often Hyundai's copy of the car's status is read (at least 300) |
+| `CAR_WAKE_MIN_SECONDS` | `1800` | the least time between taps that wake the car (at least 600) |
+| `CAR_CLIMATE_TEMP` / `CAR_CLIMATE_MINUTES` | `72` / `10` | what START CLIMATE sets (°F) and for how long (1–30 min) |
 | `CONFIRM_KINDS` | `ev charger` | comma-separated plug kinds that need a second tap on the Kindle; empty = none |
 | `TOUCH_SWAP_XY` / `TOUCH_FLIP_X` / `TOUCH_FLIP_Y` / `TOUCH_MAX_X` / `TOUCH_MAX_Y` | off / off / off / `1235` / `1647` | maps raw touch coordinates to panel pixels; the defaults assume they already match (see [Taps](#taps)) |
 

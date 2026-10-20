@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
 # Some dependencies (miniaudio, via pyatv) have no arm64 wheel: build wheels
 # here with a compiler, and keep the compiler out of the final image.
-FROM --platform=linux/arm64 python:3.11-slim-bookworm AS wheels
+FROM --platform=linux/arm64 python:3.12-slim-bookworm AS wheels
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
-FROM --platform=linux/arm64 python:3.11-slim-bookworm
+FROM --platform=linux/arm64 python:3.12-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

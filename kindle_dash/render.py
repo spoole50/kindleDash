@@ -23,6 +23,7 @@ import numpy as np  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 from .bluetti import BluettiSnapshot, Station  # noqa: E402
+from .car import COMMANDS, CarStatus  # noqa: E402
 from .data import Point, Snapshot  # noqa: E402
 from .plugs import Plug  # noqa: E402
 from .touch import Target  # noqa: E402
@@ -315,10 +316,10 @@ class _Ctx:
 
 
 # Pages, in tab order: (name used in URLs and taps, tab label)
-PAGES = (("solar", "SOLAR"), ("bluetti", "BLUETTI"), ("lights", "PLUGS"), ("tv", "TV"), ("cameras", "CAMERA"))  # "lights" stays the URL name; Kindles remember it
+PAGES = (("solar", "SOLAR"), ("bluetti", "BLUETTI"), ("car", "CAR"), ("lights", "PLUGS"), ("tv", "TV"), ("cameras", "CAMERA"))  # "lights" stays the URL name; Kindles remember it
 HIDDEN_PAGES = ("health",)  # no tab: opened by tapping the clock
 HEADER_RULE_Y = 126  # the rule under the header; tabs sit above it
-TAB_SIZE, TAB_PAD, TAB_GAP = 32, 18, 12  # five tabs, clear of the clock and date in portrait
+TAB_SIZE, TAB_PAD, TAB_GAP = 29, 14, 12  # six tabs, clear of the Kindle battery, clock and date in portrait
 CLOCK_W = 200  # the date, or the issues badge over it, at the top right; the Kindle's battery sits left of the time above
 
 
@@ -584,8 +585,10 @@ def plug_boxes(layout: str, n: int) -> list[tuple[int, int, int, int]]:
     ]
 
 
-def targets(page: str, layout: str, plugs: list[Plug], tv_apps: tuple[tuple[str, str], ...] = (), n_cameras: int = 0) -> list[Target]:
-    """Everything tappable on a page: the tabs and clock, plus a tile per plug, the TV remote's buttons or the camera stills."""
+def targets(
+    page: str, layout: str, plugs: list[Plug], tv_apps: tuple[tuple[str, str], ...] = (), n_cameras: int = 0, car: CarStatus | None = None
+) -> list[Target]:
+    """Everything tappable on a page: the tabs and clock, plus a tile per plug, the TV remote's buttons, the camera stills or the car's controls."""
     out = tab_targets() + [clock_target(layout)]
     if page == "cameras":
         out += [Target(box, box, "camera:refresh") for box in camera_boxes(layout, n_cameras)]
@@ -593,6 +596,8 @@ def targets(page: str, layout: str, plugs: list[Plug], tv_apps: tuple[tuple[str,
         out += [Target(box, box, f"plug:{p.host}") for box, p in zip(plug_boxes(layout, len(plugs)), plugs)]
     elif page == "tv":
         out += [Target(box, box, f"atv:{action}") for box, action, _ in tv_buttons(layout, tv_apps)]
+    elif page == "car":
+        out += [Target(box, box, action) for box, action in car_controls(layout, car).values()]
     return out
 
 
@@ -1078,6 +1083,289 @@ def render_cameras(shots, now: datetime, tz, layout: str = "portrait", kindle: K
         elif shot.at:
             _text(d, (x1, y1 - 14), f"{shot.at.astimezone(tz):%H:%M:%S}", 28, bold=True, fill=DARK, anchor="rs")
     _text(d, (w - M, h - 16), "UniFi Protect  \u00b7  tap a picture for a new one", 22, fill=DARK, anchor="rs")
+    return quantize(img)
+
+
+# --------------------------------------------------------------------------- car page
+
+
+def car_regions(layout: str) -> dict[str, tuple[int, int, int, int]]:
+    """The battery card, locks, climate, the row of small tiles, and the charge and refresh buttons."""
+    w, h = size(layout)
+    top, bottom = HEADER_RULE_Y + 4 + GAP, h - 50
+    if layout == "landscape":
+        rx = M + 780 + GAP
+        y = top + 600 + GAP
+        mid = (y + bottom - GAP) // 2
+        return {
+            "hero": (M, top, rx - GAP, top + 600),
+            "charge": (M, y, rx - GAP, mid),
+            "refresh": (M, mid + GAP, rx - GAP, bottom),
+            "locks": (rx, top, w - M, top + 320),
+            "climate": (rx, top + 320 + GAP, w - M, top + 640 + GAP),
+            "small": (rx, top + 640 + 2 * GAP, w - M, bottom),
+        }
+    half = (w - 2 * M - GAP) // 2
+    y = top + 480 + GAP
+    yb = y + 580 + 2 * GAP
+    return {
+        "hero": (M, top, w - M, top + 480),
+        "locks": (M, y, M + half, y + 320),
+        "climate": (M + half + GAP, y, w - M, y + 320),
+        "small": (M, y + 320 + GAP, w - M, y + 580 + GAP),
+        "charge": (M, yb, M + half, bottom),
+        "refresh": (M + half + GAP, yb, w - M, bottom),
+    }
+
+
+def car_controls(layout: str, st: CarStatus | None) -> dict[str, tuple[tuple[int, int, int, int], str]]:
+    """Each tappable region's box and what a tap does now ("car:refresh", or "car:<command>" from car.COMMANDS)."""
+    r = car_regions(layout)
+    out = {"refresh": (r["refresh"], "car:refresh")}
+    if st is not None:
+        out["locks"] = (r["locks"], "car:unlock" if st.locked else "car:lock")
+        out["climate"] = (r["climate"], "car:climate_off" if st.climate_on else "car:climate_on")
+        if st.plugged_in:  # nothing to start or stop otherwise
+            out["charge"] = (r["charge"], "car:charge_off" if st.charging else "car:charge_on")
+    return out
+
+
+def fmt_ago(seconds: float) -> str:
+    if seconds < 90:
+        return "just now"
+    if seconds < 90 * 60:
+        return f"{seconds / 60:.0f} min ago"
+    if seconds < 48 * 3600:
+        return f"{seconds / 3600:.0f} h ago"
+    return f"{seconds / 86400:.0f} days ago"
+
+
+def _car_state(st: CarStatus) -> str:
+    if st.charging:
+        return "▲ CHARGING"
+    if st.plugged_in:
+        return "● PLUGGED IN"
+    return "UNPLUGGED" if st.plugged_in is False else ""
+
+
+def _car_hero(d: ImageDraw.ImageDraw, box, st: CarStatus) -> None:
+    """Name and charging state, battery % and range, a gauge marked at the charge limit, then charging or the limits."""
+    x0, y0, x1, y1 = box
+    extra = (y1 - y0 - 480) // 2  # taller in landscape: spread out
+    d.rounded_rectangle(box, radius=14, outline=BLACK, width=3)
+    _text(d, (x0 + 22, y0 + 16), (st.model or "CAR").upper(), 28, bold=True, fill=DARK)
+    _fitted_text(d, (x0 + 22, y0 + 52), st.name, 40, (x1 - x0) * 0.55, bold=True)
+    _text(d, (x1 - 22, y0 + 20), _car_state(st), 30, bold=True, anchor="ra")
+
+    base = y0 + 260 + extra
+    half = (x1 - x0) // 2
+    _fitted_value(d, x0 + 22, base, fmt_num(st.battery_pct, 0), "%", 170, 80, half - 30)
+    _text(d, (x1 - 22, base - 120), "RANGE", 26, bold=True, fill=DARK, anchor="rs")
+    _fitted_value(d, x1 - 22, base, fmt_num(st.range, 0), st.range_unit, 110, 50, half - 30, anchor="rs")
+
+    bx0, by0, bx1, by1 = x0 + 22, base + 30, x1 - 36, base + 80
+    d.rectangle((bx0, by0, bx1, by1), outline=BLACK, width=3)
+    d.rectangle((bx1, by0 + 12, bx1 + 12, by1 - 12), fill=BLACK)
+    inner = bx1 - bx0 - 10
+    if st.battery_pct is not None:
+        d.rectangle((bx0 + 5, by0 + 5, bx0 + 5 + inner * max(0.0, min(st.battery_pct, 100.0)) / 100, by1 - 5), fill=INK)
+    limit = st.limit_ac
+    if limit is not None and 0 < limit < 100:  # where charging at home stops
+        lx = bx0 + 5 + inner * limit / 100
+        d.rectangle((lx - 3, by0 - 12, lx + 3, by1 + 12), fill=BLACK)
+        _text(d, (lx, by1 + 16), f"limit {limit}%", 22, bold=True, anchor="ma")
+
+    foot = y1 - 26
+    if st.charging:
+        left = "≈ " + fmt_duration(st.charge_minutes * 60) if st.charge_minutes else "--"
+        used = _text(d, (x0 + 22, foot), f"To {limit}%" if limit else "Full in", 30, fill=DARK, anchor="ls")
+        _text(d, (x0 + 22 + used + 14, foot), left, 36, bold=True, anchor="ls")
+        if st.charge_kw:
+            _value_unit(d, x1 - 22, foot, fmt_num(st.charge_kw, 1), "kW", 44, 28, anchor="rs")
+    else:
+        used = _text(d, (x0 + 22, foot), "Charge limits", 30, fill=DARK, anchor="ls")
+        lim = lambda v: "--" if v is None else f"{v}%"  # noqa: E731
+        _fitted_text(d, (x1 - 22, foot), f"AC {lim(st.limit_ac)}  ·  DC {lim(st.limit_dc)}", 34, x1 - x0 - used - 64, bold=True, anchor="rs")
+
+
+def _command_label(action: str) -> str:
+    """"car:unlock" -> "UNLOCK"; "car:refresh" -> "WAKE THE CAR"."""
+    name = action.split(":", 1)[1]
+    return "WAKE THE CAR" if name == "refresh" else COMMANDS[name][0]
+
+
+def _car_control(d: ImageDraw.ImageDraw, box, action: str | None, confirm: str | None, sending: str | None) -> bool:
+    """A control tile's prompt ("TAP AGAIN TO ...") or "SENDING..."; False if neither applies (draw the tile as usual)."""
+    if action is None or action not in (confirm, sending):
+        return False
+    x0, y0, x1, y1 = box
+    label, width = _command_label(action), x1 - x0 - 56
+    if action == sending:
+        d.rounded_rectangle(box, radius=14, fill=BLACK, outline=BLACK, width=3)
+        _fitted_text(d, (x0 + 28, y1 - 104), f"{label}:", 36, width, bold=True, fill=LIGHT, anchor="ls")
+        _fitted_text(d, (x0 + 28, y1 - 30), "SENDING…", 64, width, bold=True, fill=WHITE, anchor="ls")
+    else:
+        d.rounded_rectangle(box, radius=14, fill=WHITE, outline=BLACK, width=12)
+        _text(d, (x0 + 28, y1 - 104), "TAP AGAIN TO", 36, bold=True, anchor="ls")
+        _fitted_text(d, (x0 + 28, y1 - 30), label, 64, width, bold=True, anchor="ls")
+    return True
+
+
+def _hint(d, box, action: str | None, fill) -> None:
+    """'TAP TO UNLOCK' at a control tile's bottom right."""
+    if action:
+        x0, _, x1, y1 = box
+        _fitted_text(d, (x1 - 22, y1 - 20), f"TAP TO {_command_label(action)}", 24, (x1 - x0) / 2, bold=True, fill=fill, anchor="rs")
+
+
+def _car_locks(d: ImageDraw.ImageDraw, box, st: CarStatus, action: str | None = None) -> None:
+    """LOCKED, or UNLOCKED in white on black; then what's open."""
+    x0, y0, x1, y1 = box
+    alarm = st.locked is False
+    fg, sub = (WHITE, LIGHT) if alarm else (BLACK, DARK)
+    d.rounded_rectangle(box, radius=14, fill=BLACK if alarm else WHITE, outline=BLACK, width=3)
+    _text(d, (x0 + 22, y0 + 16), "LOCKS", 28, bold=True, fill=sub)
+    word = "--" if st.locked is None else ("LOCKED" if st.locked else "UNLOCKED")
+    _fitted_text(d, (x0 + 22, y0 + 150), word, 76, x1 - x0 - 44, bold=True, fill=fg, anchor="ls")
+    if st.open:
+        _text(d, (x0 + 22, y0 + 200), "OPEN", 26, bold=True, fill=sub, anchor="ls")
+        lines = _wrap(d, ", ".join(st.open), 32, x1 - x0 - 44, max_lines=1 if action else 2)
+        for i, line in enumerate(lines):
+            _text(d, (x0 + 22, y0 + 244 + i * 42), line, 32, bold=True, fill=fg, anchor="ls")
+    else:
+        _fitted_text(d, (x0 + 22, y0 + 210), "Doors and windows closed", 28, x1 - x0 - 44, fill=sub, anchor="ls")
+    _hint(d, box, action, sub)
+
+
+def _car_climate(d: ImageDraw.ImageDraw, box, st: CarStatus, action: str | None = None, temp: float | None = None) -> None:
+    x0, y0, x1, y1 = box
+    _tile(d, box, "CLIMATE")
+    word = "--" if st.climate_on is None else ("ON" if st.climate_on else "OFF")
+    _text(d, (x0 + 22, y0 + 150), word, 76, bold=True, anchor="ls")
+    notes = []
+    if st.climate_on and st.climate_set is not None:
+        notes.append(f"Set to {st.climate_set:.0f}°")
+    if st.defrost_on:
+        notes.append("Defrost on")
+    if notes:
+        _fitted_text(d, (x0 + 22, y0 + 210), "  ·  ".join(notes), 34, x1 - x0 - 44, bold=True, anchor="ls")
+    elif not st.climate_on and temp is not None and action:
+        _text(d, (x0 + 22, y0 + 210), f"Starts at {temp:.0f}°", 28, fill=DARK, anchor="ls")
+    _hint(d, box, action, DARK)
+
+
+def _car_small(d: ImageDraw.ImageDraw, box, st: CarStatus) -> None:
+    """12 V battery, tires and odometer side by side."""
+    x0, y0, x1, y1 = box
+    tw = (x1 - x0 - 2 * GAP) // 3
+    b = [(x0 + i * (tw + GAP), y0, x0 + i * (tw + GAP) + tw, y1) for i in range(3)]
+    tires = "--" if st.tire_warning is None else ("LOW" if st.tire_warning else "OK")
+    values = (
+        ("12 V BATTERY", fmt_num(st.aux_battery_pct, 0), "%"),
+        ("TIRES", tires, ""),
+        ("ODOMETER", fmt_num(st.odometer, 0), st.odometer_unit),
+    )
+    for (bx0, by0, bx1, by1), (label, value, unit) in zip(b, values):
+        d.rounded_rectangle((bx0, by0, bx1, by1), radius=14, outline=BLACK, width=3)  # _tile, with the label fitted to narrow tiles
+        _fitted_text(d, (bx0 + 22, by0 + 16), label, 28, bx1 - bx0 - 44, bold=True, fill=DARK)
+        _fitted_value(d, bx0 + 22, by0 + 140, value, unit, 76, 36, bx1 - bx0 - 44)
+    if any(p is not None for p in st.tires):
+        bx0, _, bx1, by1 = b[1]
+        psi = "  ".join("--" if p is None else f"{p:.0f}" for p in st.tires)
+        _fitted_text(d, (bx0 + 22, by1 - 52), psi, 30, bx1 - bx0 - 44, bold=True, anchor="ls")
+        _text(d, (bx0 + 22, by1 - 18), f"{st.tire_unit}: front, rear", 22, fill=DARK, anchor="ls")
+
+
+def _button(d: ImageDraw.ImageDraw, box, title: str, lines: list[str], lit: bool = False, off: bool = False) -> None:
+    """A big centred button: solid while `lit`, pale gray while `off` (nothing to tap)."""
+    x0, y0, x1, y1 = box
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    bg, fg, sub = (BLACK, WHITE, LIGHT) if lit else ((FAINT, DARK, DARK) if off else (WHITE, BLACK, DARK))
+    d.rounded_rectangle(box, radius=18, fill=bg, outline=BLACK, width=4)
+    _fitted_text(d, (cx, cy - 20 * len(lines)), title, 52, x1 - x0 - 48, bold=True, fill=fg, anchor="ms")
+    for i, line in enumerate(lines):
+        _fitted_text(d, (cx, cy + 30 + 40 * i - 20 * (len(lines) - 1)), line, 28, x1 - x0 - 48, bold=i == 0 and not lit, fill=fg if i == 0 else sub, anchor="ms")
+
+
+def _car_refresh(d: ImageDraw.ImageDraw, box, st: CarStatus | None, busy: str | None, wake_in: float, now: datetime, tz) -> None:
+    """Wakes the car for fresh numbers, or (too soon since the last wake) re-reads Hyundai's copy."""
+    if busy:
+        wake = busy == "wake"
+        _button(d, box, "ASKING THE CAR…" if wake else "CHECKING…", ["Takes up to a minute" if wake else "Reading Hyundai's copy"], lit=wake)
+        return
+    lines = []
+    if st and st.reported_at:
+        at = st.reported_at.astimezone(tz)
+        day = "" if at.date() == now.date() else f" {at:%a %-d %b}"
+        lines.append(f"Car reported {at:%H:%M}{day}  ·  {fmt_ago((now - st.reported_at).total_seconds())}")
+    lines.append(f"Can wake the car again in {math.ceil(wake_in / 60)} min" if wake_in else "Tap twice to wake the car for new numbers")
+    _button(d, box, "CHECK AGAIN" if wake_in else "REFRESH FROM CAR", lines)
+
+
+def _car_charge(d: ImageDraw.ImageDraw, box, st: CarStatus | None, action: str | None) -> None:
+    if action is None:
+        _button(d, box, "CHARGING", ["Not plugged in" if st and st.plugged_in is False else "--"], off=True)
+    elif action == "car:charge_off":
+        _button(d, box, "STOP CHARGING", [f"Charging to {st.limit_ac}%" if st.limit_ac else "Charging"])
+    else:
+        _button(d, box, "START CHARGING", [f"To the {st.limit_ac}% limit" if st.limit_ac else "Plugged in"])
+
+
+def render_car(
+    st: CarStatus | None,
+    now: datetime,
+    tz,
+    layout: str = "portrait",
+    kindle: KindleBattery | None = None,
+    busy: str | None = None,
+    wake_in: float = 0.0,
+    error: str | None = None,
+    checked_at: datetime | None = None,
+    configured: bool = True,
+    confirm: str | None = None,
+    sending: str | None = None,
+    note: str | None = None,
+    climate_temp: float | None = None,
+) -> Image.Image:
+    """The car: battery and range, locks, climate, 12 V battery, tires, odometer, and charge and refresh buttons.
+
+    Locks, climate and charging are controls: `confirm` is the action ("car:unlock") waiting for its
+    second tap, and `sending` the command on its way to the car. `busy` is "wake" or "read" while one
+    runs; `wake_in` is how long until a tap may wake the car again; `note` says how the last command went.
+    """
+    img = Image.new("L", size(layout), WHITE)
+    w, h = img.size
+    now = now.astimezone(tz)
+    header(img, "car", now, kindle)
+    d = ImageDraw.Draw(img)
+    if not configured:
+        _text(d, (w / 2, h / 2), "Set BLUELINK_USER, _PASSWORD and _PIN", 40, bold=True, anchor="mm")
+        return quantize(img)
+    r, controls = car_regions(layout), car_controls(layout, st)
+    action = {name: a for name, (_, a) in controls.items()}
+    sending = f"car:{sending}" if sending else None
+    if st is None:
+        x0, y0, x1, _ = r["hero"]
+        msg = error or "Connecting to Blue Link…"
+        _fitted_text(d, ((x0 + x1) / 2, (y0 + r["charge"][1]) / 2), msg, 40, x1 - x0, bold=True, anchor="mm")
+    else:
+        _car_hero(d, r["hero"], st)
+        if not _car_control(d, r["locks"], action.get("locks"), confirm, sending):
+            _car_locks(d, r["locks"], st, action.get("locks"))
+        if not _car_control(d, r["climate"], action.get("climate"), confirm, sending):
+            _car_climate(d, r["climate"], st, action.get("climate"), climate_temp)
+        _car_small(d, r["small"], st)
+    if not _car_control(d, r["charge"], action.get("charge"), confirm, sending):
+        _car_charge(d, r["charge"], st, action.get("charge"))
+    if busy or not _car_control(d, r["refresh"], "car:refresh", confirm, None):
+        _car_refresh(d, r["refresh"], st, busy, wake_in, now, tz)
+    parts = ["Hyundai Blue Link"] + ([f"checked {checked_at.astimezone(tz):%H:%M}"] if checked_at else [])
+    if error and st is not None:
+        parts.append(f"FAILED: {error}")
+    if note:
+        parts.append(note)
+    loud = bool(error and st is not None) or bool(note)
+    _fitted_text(d, (w - M, h - 16), "  ·  ".join(parts), 22, w - 2 * M - 80, bold=loud, fill=BLACK if loud else DARK, anchor="rs")
     return quantize(img)
 
 

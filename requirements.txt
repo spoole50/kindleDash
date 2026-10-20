@@ -6,3 +6,4 @@ influxdb-client==1.50.0
 tzdata
 python-kasa==0.10.2
 pyatv==0.18.0
+hyundai_kia_connect_api==4.38.0

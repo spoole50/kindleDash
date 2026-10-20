@@ -26,6 +26,7 @@ from .appletv import PROTOCOLS as TV_PROTOCOLS
 from .appletv import AppleTV
 from .bluetti import BluettiSnapshot
 from .camera import Protect, Shot
+from .car import BlueLink
 from .plugs import KasaPlugs
 
 log = logging.getLogger("kindle_dash")
@@ -38,6 +39,7 @@ TV_SETTLE_S = 1.5  # let the Apple TV report the change before redrawing
 CAMERA_IDLE_S = 5 * 60  # snapshot this often while nobody's looking, so the health page knows the camera works
 CAMERA_VIEW_S = 3 * 60  # the Kindle counts as looking at the cameras for this long after fetching the page
 HEALTH_S = 15
+CAR_RETRY_S = 5 * 60  # after a failed car read, try again this soon (a failed login waits longer: see car.py)
 
 
 class State:
@@ -58,6 +60,13 @@ class State:
         s = settings
         self.protect = Protect(s.protect_host, s.protect_user, s.protect_password) if s.protect_host and s.protect_user and self.shots else None
         self.cameras_at = 0.0  # monotonic time of the last snapshot round
+        self.car_lock = threading.Lock()
+        self.car = (
+            BlueLink(s.bluelink_user, s.bluelink_password, s.bluelink_pin, s.car_wake_min_seconds, s.car_climate_temp, s.car_climate_minutes)
+            if s.bluelink_user and s.bluelink_password
+            else None
+        )
+        self.car_at = 0.0  # monotonic time of the last car read
         self.health_lock = threading.Lock()
         self.checks: list[health.Check] = []
         self.problems: tuple[str, ...] = ()  # names of the failing checks; badges every page while non-empty
@@ -71,7 +80,7 @@ class State:
             for lay in render.LAYOUTS
         }
         self.plugs = KasaPlugs(settings.kasa_hosts, dict(settings.kasa_kinds))
-        self.confirm: tuple[str, float] | None = None  # (plug host, monotonic deadline) awaiting a second tap
+        self.confirm: tuple[str, float] | None = None  # (plug host or car action, monotonic deadline) awaiting a second tap
         self.lights_polled = False
         self.tv = AppleTV(settings.atv_host, settings.atv_credentials, self._tv_changed) if settings.atv_host else None
         self.last_render: datetime | None = None
@@ -88,6 +97,7 @@ class State:
         self.kindle_view: tuple[str, str, int, datetime] | None = None
         self.render_tv()
         self.render_cameras()
+        self.render_car()
         self.update_health()
 
     @staticmethod
@@ -135,6 +145,7 @@ class State:
         self.render_tv()
         self.render_bluetti()
         self.render_cameras()
+        self.render_car()
         self.update_health()
         with self.render_lock:
             if self.snapshot is None or self.stale_since is not None:
@@ -143,7 +154,7 @@ class State:
             self._publish(self.good_images)
 
     def armed(self) -> str | None:
-        """The plug waiting for a confirming tap, if its prompt hasn't expired."""
+        """The plug host or car action ("car:unlock") waiting for a confirming tap, if its prompt hasn't expired."""
         if self.confirm and time.monotonic() < self.confirm[1]:
             return self.confirm[0]
         return None
@@ -226,6 +237,62 @@ class State:
                 shot.error = str(exc)[:100] or type(exc).__name__
         self.render_cameras()
         self.update_health()
+
+    def render_car(self) -> None:
+        """Redraw the car page; badged STALE while reads fail after a good one."""
+        with self.car_lock:
+            car, kindle, now = self.car, self.kindle_battery(), self.now()
+            imgs = {}
+            for lay in render.LAYOUTS:
+                if car is None:
+                    imgs[lay] = render.render_car(None, now, self.s.zone, lay, kindle, configured=False)
+                    continue
+                img = render.render_car(
+                    car.status, now, self.s.zone, lay, kindle, car.busy, car.wake_ready_in(), car.error, car.checked_at,
+                    confirm=self.armed(), sending=car.sending, note=car.note(), climate_temp=car.climate_temp,
+                )  # fmt: skip
+                imgs[lay] = render.stale_badge(img, car.checked_at, self.s.zone) if car.error and car.checked_at else img
+            self._publish(imgs, "car")
+
+    def refresh_car(self, wake: bool = False) -> None:
+        """Read the car (a cached read, or a wake if `wake`), showing "busy" while it runs."""
+        if self.car is None:
+            return
+        self.car_at = time.monotonic()
+        self.car.read(wake)
+        self.render_car()
+        self.update_health()
+
+    def tap_car(self) -> None:
+        """The refresh button: wake the car if that's allowed yet, otherwise re-read Hyundai's copy. In the background."""
+        car = self.car
+        if car is None or car.busy:
+            return
+        wake = car.wake_ready_in() == 0
+        car.busy = "wake" if wake else "read"  # read() sets it too; this shows at once
+        self.render_car()
+        threading.Thread(target=self.refresh_car, args=(wake,), name="car-tap", daemon=True).start()
+
+    def command_car(self, action: str) -> None:
+        """Send a car command (a car.COMMANDS key) in the background; the page shows SENDING until the car answers."""
+        car = self.car
+        if car is None or car.busy or car.sending:
+            return
+        car.sending = action  # command() sets it too; this shows at once
+
+        def run():
+            car.command(action)
+            self.render_car()
+
+        self.render_car()
+        threading.Thread(target=run, name="car-command", daemon=True).start()
+
+    def clear_prompt(self, armed: str | None) -> None:
+        """Redraw the page a "tap again" prompt was on, now that it's gone."""
+        if armed and armed.startswith("car:"):
+            self.render_car()
+        elif armed:
+            self.render_lights()
 
     def cameras_viewed(self) -> bool:
         """Is the Kindle on the camera page (it fetched it in the last few minutes)?"""
@@ -330,6 +397,18 @@ async def _poll_cameras(state: State) -> None:
         await asyncio.sleep(5)
 
 
+async def _poll_car(state: State) -> None:
+    """Cached reads every CAR_REFRESH_SECONDS (sooner after a failure); never wakes the car."""
+    while True:
+        car = state.car
+        every = CAR_RETRY_S if car.error and not car.login_blocked() else state.s.car_refresh_seconds
+        if not car.busy and time.monotonic() - state.car_at >= every and not car.login_blocked():
+            await asyncio.to_thread(state.refresh_car)
+        else:
+            await asyncio.to_thread(state.render_car)  # the clock, the countdown on the button, expired prompts and notes
+        await asyncio.sleep(60)
+
+
 async def _poll_health(state: State) -> None:
     while True:
         await asyncio.sleep(HEALTH_S)
@@ -375,6 +454,8 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
             tasks.append(asyncio.create_task(_poll_cameras(state)))
         if poll and state.tv:
             tasks.append(asyncio.create_task(state.tv.run()))
+        if poll and state.car:
+            tasks.append(asyncio.create_task(_poll_car(state)))
         yield
         for task in tasks:
             task.cancel()
@@ -439,7 +520,7 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
     @app.get("/dashboard.png", dependencies=[Kindle])
     @app.get("/portrait.png", dependencies=[Kindle])
     def portrait(request: Request, rotate: int = Query(0), page: str = Query("solar")):
-        """1236 x 1648 portrait layout (the Kindle's native orientation). ?page=solar|bluetti|lights|tv
+        """1236 x 1648 portrait layout (the Kindle's native orientation). ?page=solar|bluetti|lights|tv|cameras|car
 
         The Kindle client adds ?battery=<0-100>&charging=<0|1>; the next render shows it in the header.
         """
@@ -462,7 +543,8 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
         size = render.size(layout)
         px, py = touch.raw_to_panel(x, y, settings)
         ix, iy = touch.panel_to_image(px, py, rotate, size)
-        target = touch.hit(render.targets(page, layout, state.plugs.plugs, settings.atv_apps, len(state.shots)), ix, iy)
+        car = state.car.status if state.car else None
+        target = touch.hit(render.targets(page, layout, state.plugs.plugs, settings.atv_apps, len(state.shots), car), ix, iy)
         log.info("tap raw=%d,%d panel=%d,%d %s/%s image=%d,%d -> %s", x, y, px, py, page, layout, ix, iy, target.action if target else "-")
         if target is None:
             return Response(status_code=204)
@@ -471,8 +553,7 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
         armed, state.confirm = state.armed(), None  # any tap ends a pending prompt
         if kind == "page":
             lines.append(f"page {arg}" if arg != page else "redraw")
-            if armed:
-                await asyncio.to_thread(state.render_lights)  # don't come back to a stale prompt
+            await asyncio.to_thread(state.clear_prompt, armed)  # don't come back to a stale prompt
         elif kind == "plug":
             if state.needs_confirm(arg) and armed != arg:
                 state.confirm = (arg, time.monotonic() + CONFIRM_S)
@@ -480,6 +561,23 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
             else:
                 await state.plugs.toggle(arg)
             await asyncio.to_thread(state.render_lights)
+            lines.append("redraw")
+        elif kind == "car" and arg == "refresh":
+            if state.car and not state.car.busy and state.car.wake_ready_in() == 0 and armed != target.action:
+                state.confirm = (target.action, time.monotonic() + CONFIRM_S)  # waking the car takes a second tap
+                log.info("car wake needs a second tap within %d s", CONFIRM_S)
+                await asyncio.to_thread(state.render_car)
+            else:  # the second tap, or just a re-read of Hyundai's copy
+                await asyncio.to_thread(state.tap_car)
+                await asyncio.to_thread(state.clear_prompt, armed)
+            lines.append("redraw")
+        elif kind == "car":  # every command needs a second tap
+            if armed != target.action:
+                state.confirm = (target.action, time.monotonic() + CONFIRM_S)
+                log.info("car %s needs a second tap within %d s", arg, CONFIRM_S)
+                await asyncio.to_thread(state.render_car)
+            else:
+                await asyncio.to_thread(state.command_car, arg)
             lines.append("redraw")
         elif kind == "camera":
             await asyncio.to_thread(state.refresh_cameras)
@@ -591,6 +689,17 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
             "health": [c._asdict() for c in state.checks],
             "cameras": [{"name": s.name, "label": s.label, "at": iso(s.at), "error": s.error} for s in state.shots],
             "plugs": [asdict(p) for p in state.plugs.plugs] if state.lights_polled else None,
+            "car": {
+                "status": asdict(state.car.status) if state.car.status else None,
+                "checked_at": iso(state.car.checked_at),
+                "error": state.car.error,
+                "busy": state.car.busy,
+                "sending": state.car.sending,
+                "note": state.car.note(),
+                "wake_ready_in_s": round(state.car.wake_ready_in()),
+            }
+            if state.car
+            else None,
             "tv": {
                 "connected": state.tv.connected,
                 "paired": [p for p in TV_PROTOCOLS if state.tv.paired(p)],

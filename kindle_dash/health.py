@@ -75,6 +75,19 @@ def checks(state, now: datetime) -> list[Check]:
         connecting = tv.paired() and not tv.connected and not tv.error  # still starting up
         out.append(Check("Apple TV", status is None or connecting, status or "Connected"))
 
+    if state.car:
+        car = state.car
+        if car.error:
+            last = f" (last good {hm(car.checked_at)})" if car.checked_at else ""
+            out.append(Check("Car (Blue Link)", False, f"{car.error}{last}"))
+        elif car.status is None:
+            out.append(Check("Car (Blue Link)", True, "Connecting"))
+        else:
+            st = car.status
+            pct = "" if st.battery_pct is None else f"{st.battery_pct:.0f}%, "
+            seen = f"car reported {hm(st.reported_at)}, " if st.reported_at else ""
+            out.append(Check("Car (Blue Link)", True, f"{pct}{seen}checked {hm(car.checked_at)}"))
+
     for shot in state.shots:
         name = f"Camera: {shot.label}"
         if shot.error:

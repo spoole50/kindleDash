@@ -47,7 +47,7 @@ def _app(**kw):
 def test_tabs_clear_the_clock():
     # the Kindle's battery (icon + bold "100%", ~140 px) sits left of the time (~140 px) in portrait
     assert render.TABS_RIGHT < render.W - render.M - 140 - 20 - 140
-    assert [a for _, a in render.tab_boxes()] == ["page:solar", "page:bluetti", "page:lights", "page:tv", "page:cameras"]
+    assert [a for _, a in render.tab_boxes()] == ["page:solar", "page:bluetti", "page:car", "page:lights", "page:tv", "page:cameras"]
 
 
 def test_photo_is_dithered_to_panel_grays():

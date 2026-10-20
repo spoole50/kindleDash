@@ -50,6 +50,16 @@ class Settings:
     protect_password: str = ""
     protect_cameras: tuple[tuple[str, str], ...] = ()
     camera_refresh_seconds: int = 30  # while the Kindle shows the page; every 5 min otherwise
+    # Hyundai Blue Link (US), for the CAR page: the MyHyundai login and Blue Link PIN.
+    # Cached reads (the car stays asleep) every car_refresh_seconds; a tap may wake
+    # the car for fresh numbers at most every car_wake_min_seconds.
+    bluelink_user: str = ""
+    bluelink_password: str = ""
+    bluelink_pin: str = ""
+    car_refresh_seconds: int = 1800
+    car_wake_min_seconds: int = 1800
+    car_climate_temp: float = 72  # what START CLIMATE sets, in the car's units (°F in the US)
+    car_climate_minutes: int = 10
     # Raw touch coordinates -> panel pixels (portrait 1236 x 1648). The defaults
     # assume the touch panel already reports panel pixels.
     touch_swap_xy: bool = False
@@ -93,6 +103,13 @@ class Settings:
             protect_password=env("PROTECT_PASSWORD", ""),
             protect_cameras=tuple((n, label or n) for n, label in _plugs(env("PROTECT_CAMERAS", ""))),
             camera_refresh_seconds=max(10, int(env("CAMERA_REFRESH_SECONDS", cls.camera_refresh_seconds))),
+            bluelink_user=env("BLUELINK_USER", ""),
+            bluelink_password=env("BLUELINK_PASSWORD", ""),
+            bluelink_pin=env("BLUELINK_PIN", ""),
+            car_refresh_seconds=max(300, int(env("CAR_REFRESH_SECONDS", cls.car_refresh_seconds))),
+            car_wake_min_seconds=max(600, int(env("CAR_WAKE_MIN_SECONDS", cls.car_wake_min_seconds))),
+            car_climate_temp=float(env("CAR_CLIMATE_TEMP", cls.car_climate_temp)),
+            car_climate_minutes=max(1, min(30, int(env("CAR_CLIMATE_MINUTES", cls.car_climate_minutes)))),
             touch_swap_xy=_flag(env("TOUCH_SWAP_XY", "")),
             touch_flip_x=_flag(env("TOUCH_FLIP_X", "")),
             touch_flip_y=_flag(env("TOUCH_FLIP_Y", "")),
