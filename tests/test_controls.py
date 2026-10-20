@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw
 
 from kindle_dash import render, touch
+from kindle_dash import app as app_mod
 from kindle_dash.app import create_app
 from kindle_dash.config import Settings
 from kindle_dash.plugs import KasaPlugs, Plug
@@ -237,7 +238,7 @@ def test_ev_charger_needs_a_second_tap(monkeypatch):
     tap = lambda c: c.post(f"/tap?x={x}&y={y}&page=lights", headers=KINDLE)  # noqa: E731
     with TestClient(app, headers=KINDLE) as client:
         plain = client.get("/portrait.png?page=lights").content
-        assert tap(client).text.splitlines()[1] == "redraw"
+        assert tap(client).text.splitlines()[1:] == ["redraw", "later 21"]
         assert state.plugs.toggled == [] and state.armed() == "10.0.0.2"
         prompt = client.get("/portrait.png?page=lights").content
         assert prompt != plain
@@ -247,7 +248,7 @@ def test_ev_charger_needs_a_second_tap(monkeypatch):
         # a prompt expires...
         tap(client)
         now = time.monotonic()
-        monkeypatch.setattr(time, "monotonic", lambda: now + 11)
+        monkeypatch.setattr(time, "monotonic", lambda: now + app_mod.CONFIRM_S + 1)
         tap(client)  # ...so this only asks again
         assert state.plugs.toggled == ["10.0.0.2"] and state.armed() == "10.0.0.2"
 

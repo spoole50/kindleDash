@@ -175,7 +175,7 @@ def test_tap_wakes_the_car_then_reads_hyundais_copy():
     with TestClient(app, headers=KINDLE) as client:
         before = client.get("/portrait.png?page=car").content
         r = client.post(f"/tap?x={x}&y={y}&page=car")
-        assert r.text.splitlines() == ["flash %d %d %d %d" % touch.box_to_panel(box, 0, render.size("portrait")), "redraw"]
+        assert r.text.splitlines() == ["flash %d %d %d %d" % touch.box_to_panel(box, 0, render.size("portrait")), "redraw", "later 21"]
         assert state.armed() == "car:refresh" and state.car._vm.forced == 0  # TAP AGAIN TO WAKE THE CAR
         client.post(f"/tap?x={x}&y={y}&page=car")
         for _ in range(100):  # the read runs in the background
@@ -253,7 +253,7 @@ def test_unlock_takes_two_taps():
     locks = render.car_regions("portrait")["locks"]
     with TestClient(app, headers=KINDLE) as client:
         before = client.get("/portrait.png?page=car").content
-        assert _tap(client, locks).text.splitlines()[-1] == "redraw"
+        assert _tap(client, locks).text.splitlines()[-2:] == ["redraw", "later 21"]
         assert state.armed() == "car:unlock" and not getattr(vm, "commands", [])
         assert client.get("/portrait.png?page=car").content != before  # TAP AGAIN TO UNLOCK
         _tap(client, locks)

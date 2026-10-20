@@ -61,8 +61,8 @@ def test_auto_theme_follows_the_dark_hours():
 
 
 def test_device_report_drops_anything_malformed():
-    dev = prefs.device_from({"light": "12", "lightmax": "24", "warm": "x", "wifi": "-56", "up": "-3", "ver": "2026-10-19"}, "10.0.0.9", 90)
-    assert dev == KindleDevice(12, 24, None, -56, None, "2026-10-19", "10.0.0.9", 90)
+    dev = prefs.device_from({"light": "12", "lightmax": "24", "warm": "x", "wifi": "-56", "up": "-3", "ver": prefs.KINDLE_SCRIPT_VERSION}, "10.0.0.9", 90)
+    assert dev == KindleDevice(12, 24, None, -56, None, prefs.KINDLE_SCRIPT_VERSION, "10.0.0.9", 90)
     assert dev.scripts_current
     assert prefs.device_from({"ver": "<script>"}, None, 0).version is None
     assert not prefs.device_from({}, None, 0).scripts_current
@@ -163,7 +163,7 @@ def test_exit_takes_two_taps(tmp_path):
     app, state = _app(tmp_path)
     exit_box = _box("kindle", "set:exit")
     with TestClient(app, headers=KINDLE) as client:
-        assert _tap(client, exit_box).text.splitlines()[1:] == ["redraw"]
+        assert _tap(client, exit_box).text.splitlines()[1:] == ["redraw", "later 21"]  # redraw when the prompt runs out
         assert state.armed() == "set:exit"
         assert _tap(client, exit_box).text.splitlines()[1:] == ["exit"]
         _tap(client, exit_box)
@@ -181,3 +181,15 @@ def test_health_flags_old_kindle_scripts(tmp_path):
         assert not check.ok and "kindledash.sh" in check.detail
         client.get("/portrait.png?page=solar" + DEVICE_QS)
         assert next(c for c in health.checks(state, NOW) if c.name == "Kindle scripts").ok
+
+
+def test_an_expired_prompt_leaves_the_screen_at_the_next_fetch(tmp_path):
+    app, state = _app(tmp_path)
+    exit_box = _box("kindle", "set:exit")
+    with TestClient(app, headers=KINDLE) as client:
+        _tap(client, exit_box)
+        prompt = client.get("/portrait.png?page=settings").content
+        state.confirm = (state.confirm[0], 0.0)  # run out
+        assert client.get("/portrait.png?page=settings").content != prompt
+        assert state.confirm is None
+        assert _tap(client, exit_box).text.splitlines()[1:] == ["redraw", "later 21"]  # starts again, as the screen now says

@@ -34,7 +34,7 @@ log = logging.getLogger("kindle_dash")
 KINDLE_REPORT_MAX_AGE_S = 15 * 60  # hide the Kindle's battery after this long without a report
 TAB_NAMES = tuple(name for name, _ in render.PAGES)
 PAGE_NAMES = TAB_NAMES + render.HIDDEN_PAGES
-CONFIRM_S = 10  # how long a "tap again" prompt waits for the second tap
+CONFIRM_S = 20  # how long a "tap again" prompt waits for the second tap (the e-ink redraw takes a few of them)
 TV_REDRAW = ("play_pause", "skip_forward", "skip_backward", "power")  # change what's playing: redraw after
 TV_SETTLE_S = 1.5  # let the Apple TV report the change before redrawing
 CAMERA_IDLE_S = 5 * 60  # snapshot this often while nobody's looking, so the health page knows the camera works
@@ -158,6 +158,12 @@ class State:
                 return  # nothing fresh to redraw; the next good poll picks the report up
             self.good_images = self._render_all(self.snapshot)
             self._publish(self.good_images)
+
+    def expire_prompt(self) -> None:
+        """Drop a "tap again" prompt that's run out, redrawing its page so the Kindle doesn't keep showing it."""
+        if self.confirm and time.monotonic() >= self.confirm[1]:
+            key, self.confirm = self.confirm[0], None
+            self.clear_prompt(key)
 
     def armed(self) -> str | None:
         """The plug host or car action ("car:unlock") waiting for a confirming tap, if its prompt hasn't expired."""
@@ -576,6 +582,7 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
     def serve(request: Request, layout: str, rotate: int, page: str) -> Response:
         check_view(rotate, page)
         state.kindle_view = (page, layout, rotate, state.now())
+        state.expire_prompt()
         state.device = prefs.device_from(request.query_params, request.client.host if request.client else None, rotate)
         if state.report_kindle(request.query_params.get("battery"), request.query_params.get("charging")):
             state.rerender()
@@ -609,6 +616,7 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
         `flash <left> <top> <width> <height> [white]` (panel pixels; white on a dark page),
         `page <name>`, `redraw`, and from the settings page `rotate <0|90|180|270>`,
         `light <level>`, `warm <level>`, `clean` (a full flashing redraw) and `exit` (to the library).
+        A tap that asks for a second one adds `later <seconds>`: redraw then, when the prompt has gone.
         """
         check_view(rotate, page)
         layout = "landscape" if rotate in (90, 270) else "portrait"
@@ -665,6 +673,8 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
                     await asyncio.sleep(TV_SETTLE_S)
                 await asyncio.to_thread(state.render_tv)
                 lines.append("redraw")
+        if state.confirm:  # this tap asked for a second one
+            lines.append(f"later {CONFIRM_S + 1}")
         return "\n".join(lines) + "\n"
 
     @app.get("/rotate/count", response_class=PlainTextResponse, dependencies=[Kindle])

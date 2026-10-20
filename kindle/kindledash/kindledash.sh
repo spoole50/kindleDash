@@ -1,7 +1,7 @@
 #!/bin/sh
 # Main loop: fetch the dashboard PNG and draw it with FBInk when it changes.
 BIN="$(cd "$(dirname "$0")" && pwd)"
-KD_VERSION=2026-10-19  # sent with each fetch; the server's settings page says when the Kindle needs a newer copy
+KD_VERSION=2026-10-19.2  # sent with each fetch; the server's settings page says when the Kindle needs a newer copy
 . "$BIN/config.sh"
 
 . "$BIN/common.sh"
@@ -197,6 +197,8 @@ send_tap() {
                        *) rm -f "$DARK_FILE"; lipc-set-prop com.lab126.powerd flIntensity "$a"; log "backlight $a" ;; esac ;;
             warm) case "$a" in ''|*[!0-9]*) ;; *) lipc-set-prop com.lab126.powerd currentAmberLevel "$a"; log "warm light $a" ;; esac ;;
             clean) touch "$STATE/clean"; wake=1 ;;
+            # a "tap again" prompt: redraw once it has run out, so it doesn't stay on screen
+            later) case "$a" in ''|*[!0-9]*) ;; *) ( sleep "$a"; kill -ALRM "$MAIN_PID" 2>/dev/null ) & ;; esac ;;
             exit)
                 "$FBINK" -q -c -f -m -y 10 "Returning to the library..." 2>/dev/null
                 log "settings page -> exit to library"; sync

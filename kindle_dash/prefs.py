@@ -19,7 +19,7 @@ log = logging.getLogger("kindle_dash")
 
 THEMES = ("light", "dark", "auto")
 IDLE_CHOICES = (0, 120, 300, 900, 1800)  # seconds before going home (0 = stay put)
-KINDLE_SCRIPT_VERSION = "2026-10-19"  # KD_VERSION in kindle/kindledash/kindledash.sh; older Kindles lack the settings commands
+KINDLE_SCRIPT_VERSION = "2026-10-19.2"  # KD_VERSION in kindle/kindledash/kindledash.sh; older Kindles lack the settings commands
 DARK_FULL_REFRESH_EVERY = 6  # dark pages ghost more, so flash-clear them more often
 
 
