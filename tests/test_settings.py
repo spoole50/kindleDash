@@ -163,7 +163,7 @@ def test_exit_takes_two_taps(tmp_path):
     app, state = _app(tmp_path)
     exit_box = _box("kindle", "set:exit")
     with TestClient(app, headers=KINDLE) as client:
-        assert _tap(client, exit_box).text.splitlines()[1:] == ["redraw", "later 21"]  # redraw when the prompt runs out
+        assert _tap(client, exit_box).text.splitlines()[1:] == ["redraw", "later 11"]  # redraw when the prompt runs out
         assert state.armed() == "set:exit"
         assert _tap(client, exit_box).text.splitlines()[1:] == ["exit"]
         _tap(client, exit_box)
@@ -192,4 +192,4 @@ def test_an_expired_prompt_leaves_the_screen_at_the_next_fetch(tmp_path):
         state.confirm = (state.confirm[0], 0.0)  # run out
         assert client.get("/portrait.png?page=settings").content != prompt
         assert state.confirm is None
-        assert _tap(client, exit_box).text.splitlines()[1:] == ["redraw", "later 21"]  # starts again, as the screen now says
+        assert _tap(client, exit_box).text.splitlines()[1:] == ["redraw", "later 11"]  # starts again, as the screen now says

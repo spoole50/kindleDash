@@ -238,7 +238,7 @@ def test_ev_charger_needs_a_second_tap(monkeypatch):
     tap = lambda c: c.post(f"/tap?x={x}&y={y}&page=lights", headers=KINDLE)  # noqa: E731
     with TestClient(app, headers=KINDLE) as client:
         plain = client.get("/portrait.png?page=lights").content
-        assert tap(client).text.splitlines()[1:] == ["redraw", "later 21"]
+        assert tap(client).text.splitlines()[1:] == ["redraw", "later 11"]
         assert state.plugs.toggled == [] and state.armed() == "10.0.0.2"
         prompt = client.get("/portrait.png?page=lights").content
         assert prompt != plain
