@@ -1,7 +1,7 @@
 #!/bin/sh
 # Main loop: fetch the dashboard PNG and draw it with FBInk when it changes.
 BIN="$(cd "$(dirname "$0")" && pwd)"
-KD_VERSION=2026-10-19.3  # sent with each fetch; the server's settings page says when the Kindle needs a newer copy
+KD_VERSION=2026-10-19.4  # sent with each fetch; the server's settings page says when the Kindle needs a newer copy
 . "$BIN/config.sh"
 
 . "$BIN/common.sh"
@@ -23,8 +23,11 @@ save_syslog() {
     } > "$SYSLOG_COPY.tmp" && mv "$SYSLOG_COPY.tmp" "$SYSLOG_COPY"
 }
 
-# keep the log small
-[ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 200000 ] && tail -n 200 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+# keep the log small: at start, then hourly from the main loop (a redraw logs a line a minute)
+trim_log() {
+    [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 200000 ] && tail -n 1000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+}
+trim_log
 
 if [ -z "$FBINK" ]; then
     log "fbink not found; set FBINK_BIN in config.sh"
@@ -342,6 +345,7 @@ if { [ "$TOUCH_ROTATE" = "1" ] || [ "$TAPS" = "1" ]; } && [ -r "$TOUCH_DEV" ]; t
 fi
 
 last_sum=""
+loops=0
 force=""  # draw the next fetch even if unchanged (it may be under a tap's flash)
 draws=0
 fail_since=""
@@ -437,6 +441,8 @@ while true; do
         wifi_up || reconnect_wifi
     fi
     save_syslog
+    loops=$((loops + 1))
+    [ $((loops % 60)) -eq 0 ] && trim_log
     [ -n "$rotate_now" ] || [ -n "$refresh_now" ] && continue
     sleep "$INTERVAL" &
     wait $!  # interrupted by USR1/USR2/ALRM, so presses and touches act at once
