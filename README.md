@@ -90,8 +90,35 @@ isn't working. Tap the clock (on any page) for the health page: a row per subsys
 | Apple TV | not paired, or can't connect |
 | Camera, per camera | the last snapshot failed |
 | Car (Blue Link) | the last read from Hyundai failed |
+| Kindle scripts | the Kindle runs an older `kindledash.sh`, without the settings commands |
 
 Checks run every 15 s. `/admin` lists the same checks, and `/status` has them as JSON.
+
+### Settings
+
+The clock's page has two halves, switched at its top right: **STATUS** (the checks
+above) and **SETTINGS**:
+
+| Row | What it does | Kept by |
+|---|---|---|
+| ORIENTATION | portrait, either landscape, or upside down; the Kindle turns at once | the Kindle (`kindledash/rotation`) |
+| THEME | LIGHT, DARK, or AUTO (dark from `DARK_FROM` to `DARK_UNTIL`, 21:00–07:00). CLEAN flashes the screen clear of ghosting. | the server |
+| BRIGHTNESS / WARM LIGHT | OFF or WHITE, then 12 steps up to the Kindle's maximum (24 on a PW11) | the Kindle |
+| AFTER NO TAPS… | NEVER, 2, 5, 15 or 30 min before going back to the home tab | the server |
+| WHEN IDLE, THE FRONT LIGHT | stays on, or turns off as it goes home (the next tap only turns it on) | the server |
+| HOME TAB | the tab it goes back to | the server |
+| KINDLE | battery, Wi-Fi signal and address, uptime and script version; EXIT (two taps) goes back to the library like a double press of the power button | – |
+
+The server saves its settings in `/data/settings.json` (the `data` volume) and sends
+them to the Kindle in an `X-Kindle-Settings` header on every image. They override
+`HOME_PAGE`, `IDLE_RETURN` and `IDLE_BACKLIGHT_OFF` in `config.sh`, which only apply
+while the server can't be reached.
+
+Dark mode is drawn by the server: every page comes out white on black, except the camera
+stills, which stay as they are. Leave the Kindle's own Dark Mode off, because it turns
+photos into negatives (see [Camera page](#camera-page)). Dark pages ghost more, so the Kindle
+does a full refresh every 6 redraws instead of every `FULL_REFRESH_EVERY` while dark, and
+another whenever the theme changes. Taps flash white instead of black.
 
 ### Car page
 
@@ -246,6 +273,8 @@ status, a **Rotate Kindle 90°** button, a button per plug, and Apple TV pairing
 | `CAR_REFRESH_SECONDS` | `1800` | how often Hyundai's copy of the car's status is read (at least 300) |
 | `CAR_WAKE_MIN_SECONDS` | `1800` | the least time between taps that wake the car (at least 600) |
 | `CAR_CLIMATE_TEMP` / `CAR_CLIMATE_MINUTES` | `72` / `10` | what START CLIMATE sets (°F) and for how long (1–30 min) |
+| `DARK_FROM` / `DARK_UNTIL` | `21:00` / `07:00` | when the AUTO theme is dark |
+| `PREFS_FILE` | `/data/settings.json` | where the settings page's choices are saved |
 | `CONFIRM_KINDS` | `ev charger` | comma-separated plug kinds that need a second tap on the Kindle; empty = none |
 | `TOUCH_SWAP_XY` / `TOUCH_FLIP_X` / `TOUCH_FLIP_Y` / `TOUCH_MAX_X` / `TOUCH_MAX_Y` | off / off / off / `1235` / `1647` | maps raw touch coordinates to panel pixels; the defaults assume they already match (see [Taps](#taps)) |
 
@@ -296,7 +325,7 @@ The loop:
 1. sets `preventScreenSaver 1` and stops the Kindle UI (`stop lab126_gui`, falling back to `stop framework`) so the UI can't draw over the dashboard
 2. every `INTERVAL` seconds, `curl`s the PNG with connect and total timeouts
 3. if the image's md5 changed, draws it with FBInk using a partial refresh, with a full flashing refresh every `FULL_REFRESH_EVERY` (15) draws to clear ghosting
-4. sends its own battery level and charging state (`lipc-get-prop com.lab126.powerd battLevel` / `isCharging`) with each fetch, for the header indicator
+4. sends its own battery level and charging state (`lipc-get-prop com.lab126.powerd battLevel` / `isCharging`) with each fetch, for the header indicator, plus its front and warm light levels, Wi-Fi signal, uptime and script version for the settings page
 5. if a fetch fails, leaves the last image up, draws a small inverted "! offline since HH:MM" marker in the bottom-left corner, and toggles Wi-Fi via `lipc` to reconnect. The next successful fetch does a full redraw that removes the marker.
 
 ### Install (from a Mac)
@@ -330,7 +359,8 @@ Every press is logged and the log is saved to disk right away. Set `POWER_BUTTON
 
 ### Rotating
 
-`ROTATIONS` in `config.sh` lists the orientations to cycle through. The default is `"0 270"`:
+The settings page (tap the clock, then SETTINGS) sets the orientation directly.
+`ROTATIONS` in `config.sh` lists the orientations the hold and the Rotate button cycle through. The default is `"0 270"`:
 
 | Value | Layout | Kindle held |
 |---|---|---|
@@ -360,13 +390,14 @@ out what's under it, using the same geometry it drew with, and replies:
 
 - **tab**: the tab flashes black and the Kindle fetches the other page (full refresh)
 - **plug tile**: the tile flashes, the plug toggles, and the Kindle fetches the redrawn page (partial refresh). For a `CONFIRM_KINDS` plug, the first tap only asks for a second one.
+- **settings page**: `rotate`, `light`, `warm`, `clean` or `exit` lines for the Kindle to act on (see [Settings](#settings))
 - **nothing**: no reply body, nothing happens
 
 The 2 s touch-and-hold still rotates. The current page is saved in
 `kindledash/page`, next to `kindledash/rotation`.
 
 After `IDLE_RETURN` seconds (300) without a tap, the Kindle goes back to
-`HOME_PAGE` (`solar`). It checks once per `INTERVAL`, so the switch can come up to a
+`HOME_PAGE` (`solar`). The settings page changes both. It checks once per `INTERVAL`, so the switch can come up to a
 minute later. Set `IDLE_RETURN=0` to stay on the last chosen page.
 It also turns the backlight off after `IDLE_RETURN` seconds without a tap or power
 press, on any page, Solar included (`IDLE_BACKLIGHT_OFF=1`). The next tap only turns

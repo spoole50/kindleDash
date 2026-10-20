@@ -9,6 +9,7 @@ from kindle_dash import render, touch
 from kindle_dash.app import create_app
 from kindle_dash.camera import Shot
 from kindle_dash.config import Settings
+from kindle_dash.prefs import KINDLE_SCRIPT_VERSION
 from kindle_dash.sample import sample_bluetti
 
 TZ = ZoneInfo("UTC")
@@ -87,23 +88,23 @@ def test_failures_show_on_the_health_page_and_badge_every_page():
     with TestClient(app, headers=KINDLE) as client:
         state.refresh_cameras()
         assert state.problems == ()
-        clean = client.get("/portrait.png?page=tv").content
+        clean = client.get(f"/portrait.png?page=tv&ver={KINDLE_SCRIPT_VERSION}").content
         state.protect.fail = True
         state.refresh_cameras()  # keeps the last still, marked failed
         assert state.shots[0].image is not None and "offline" in state.shots[0].error
         assert state.problems == ("Camera: Outer garage",)
-        assert client.get("/portrait.png?page=tv").content != clean  # badged
+        assert client.get(f"/portrait.png?page=tv&ver={KINDLE_SCRIPT_VERSION}").content != clean  # badged
         # the clock opens the health page
         cx, cy = touch.image_to_panel(render.W - render.M - 60, 60, 0, render.size("portrait"))
         assert client.post(f"/tap?x={cx}&y={cy}&page=tv").text.splitlines()[1] == "page health"
-        assert client.get("/portrait.png?page=health").status_code == 200
+        assert client.get(f"/portrait.png?page=health&ver={KINDLE_SCRIPT_VERSION}").status_code == 200
         admin = client.get("/admin", headers=ADMIN).text
         assert "PROBLEM" in admin and "Outer garage" in admin
         status = client.get("/status", headers=ADMIN).json()
         assert status["cameras"][0]["error"] and any(not c["ok"] for c in status["health"])
         state.protect.fail = False
         state.refresh_cameras()
-        assert state.problems == () and client.get("/portrait.png?page=tv").content == clean
+        assert state.problems == () and client.get(f"/portrait.png?page=tv&ver={KINDLE_SCRIPT_VERSION}").content == clean
 
 
 def test_health_checks_cover_each_subsystem():

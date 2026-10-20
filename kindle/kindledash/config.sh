@@ -9,6 +9,8 @@ TOKEN=""
 # TAP_MAX_MS count as taps.
 TAPS=1
 TAP_MAX_MS=1000
+# HOME_PAGE, IDLE_RETURN and IDLE_BACKLIGHT_OFF are set from the dashboard's
+# settings page (the gear) once the server answers; these are the fallbacks.
 # After IDLE_RETURN seconds without a tap, go back to HOME_PAGE (0 = stay on
 # whatever page was last chosen). Checked once per INTERVAL, so it can take up
 # to INTERVAL longer.

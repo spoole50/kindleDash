@@ -11,7 +11,7 @@ import logging
 import threading
 import time
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from urllib.parse import parse_qs
 from datetime import datetime, timezone
 
@@ -19,7 +19,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from PIL import Image
 
-from . import health, render, touch
+from . import health, prefs, render, touch
 from .config import Settings
 from .data import Snapshot
 from .appletv import PROTOCOLS as TV_PROTOCOLS
@@ -32,7 +32,8 @@ from .plugs import KasaPlugs
 log = logging.getLogger("kindle_dash")
 
 KINDLE_REPORT_MAX_AGE_S = 15 * 60  # hide the Kindle's battery after this long without a report
-PAGE_NAMES = tuple(name for name, _ in render.PAGES) + render.HIDDEN_PAGES
+TAB_NAMES = tuple(name for name, _ in render.PAGES)
+PAGE_NAMES = TAB_NAMES + render.HIDDEN_PAGES
 CONFIRM_S = 10  # how long a "tap again" prompt waits for the second tap
 TV_REDRAW = ("play_pause", "skip_forward", "skip_backward", "power")  # change what's playing: redraw after
 TV_SETTLE_S = 1.5  # let the Apple TV report the change before redrawing
@@ -87,7 +88,10 @@ class State:
         self.last_success: datetime | None = None
         self.stale_since: datetime | None = None
         self.last_error: str | None = None
-        self._png: dict[tuple[str, str, int], tuple[bytes, str]] = {}
+        self._png: dict[tuple[str, str, int, bool], tuple[bytes, str]] = {}  # (page, layout, rotate, dark)
+        self.prefs_lock = threading.Lock()
+        self.prefs = prefs.load(settings.prefs_file, TAB_NAMES)
+        self.device: prefs.KindleDevice | None = None  # the Kindle's light, Wi-Fi, scripts..., from its last fetch
         # bumped by POST /rotate; the Kindle polls it and rotates once per increase
         self.rotate_requests = 0
         # the display's own battery, sent as query params on its image fetches
@@ -98,6 +102,7 @@ class State:
         self.render_tv()
         self.render_cameras()
         self.render_car()
+        self.render_settings()
         self.update_health()
 
     @staticmethod
@@ -146,6 +151,7 @@ class State:
         self.render_bluetti()
         self.render_cameras()
         self.render_car()
+        self.render_settings()
         self.update_health()
         with self.render_lock:
             if self.snapshot is None or self.stale_since is not None:
@@ -287,9 +293,67 @@ class State:
         self.render_car()
         threading.Thread(target=run, name="car-command", daemon=True).start()
 
+    def dark(self) -> bool:
+        p = self.prefs
+        return prefs.is_dark(p.theme, self.now().astimezone(self.s.zone), self.s.dark_from, self.s.dark_until)
+
+    def render_settings(self) -> None:
+        dev, kindle = self.device, self.kindle_battery()
+        self._publish(
+            {
+                lay: render.render_settings(self.prefs, dev, self.now(), self.s.zone, lay, kindle, self.armed(), (self.s.dark_from, self.s.dark_until))
+                for lay in render.LAYOUTS
+            },
+            "settings",
+        )
+
+    def apply_setting(self, arg: str, armed: str | None) -> list[str]:
+        """A tap on the settings page ("rotate:90", "theme:dark", "light:6"...): the reply lines for the Kindle.
+
+        Orientation, light and warmth are the Kindle's to apply; the rest is saved
+        here and reaches the Kindle in the header of its next image.
+        """
+        name, _, value = arg.partition(":")
+        dev = self.device or prefs.KindleDevice()
+        out: list[str] = []
+        changes = {}
+        if name == "rotate" and value in ("0", "90", "180", "270"):
+            out.append(f"rotate {value}")
+        elif name in ("light", "warm") and value.isdigit() and int(value) <= render.LEVELS:
+            top = (dev.light_max or 24) if name == "light" else prefs.WARM_MAX
+            level = round(top * int(value) / render.LEVELS)
+            out.append(f"{name} {level}")
+            self.device = dev._replace(**{name: level})  # show it now; the Kindle's next fetch confirms it
+        elif name == "theme" and value in prefs.THEMES:
+            changes = {"theme": value}
+        elif name == "idle" and value.isdigit() and int(value) in prefs.IDLE_CHOICES:
+            changes = {"idle_return": int(value)}
+        elif name == "idlelight" and value in ("0", "1"):
+            changes = {"idle_light_off": value == "1"}
+        elif name == "home" and value in TAB_NAMES:
+            changes = {"home": value}
+        elif name == "clean":
+            out.append("clean")
+        elif name == "exit":
+            if armed != "set:exit":
+                self.confirm = ("set:exit", time.monotonic() + CONFIRM_S)
+                log.info("exit to the library needs a second tap within %d s", CONFIRM_S)
+            else:
+                log.info("exit to the library from the settings page")
+                return ["exit"]
+        if changes:
+            with self.prefs_lock:
+                self.prefs = replace(self.prefs, **changes)
+                prefs.save(self.s.prefs_file, self.prefs)
+            log.info("settings: %s", changes)
+        self.render_settings()
+        return out + ["redraw"]
+
     def clear_prompt(self, armed: str | None) -> None:
         """Redraw the page a "tap again" prompt was on, now that it's gone."""
-        if armed and armed.startswith("car:"):
+        if armed and armed.startswith("set:"):
+            self.render_settings()
+        elif armed and armed.startswith("car:"):
             self.render_car()
         elif armed:
             self.render_lights()
@@ -360,16 +424,19 @@ class State:
         self._publish(imgs)
 
     def png(self, layout: str, rotate: int, page: str = "solar") -> tuple[bytes, str]:
-        """Encoded once per (page, layout, rotation) per render; requests just read the cache."""
+        """Encoded once per (page, layout, rotation, theme) per render; requests just read the cache."""
+        dark = self.dark()
         with self.lock:
-            cached = self._png.get((page, layout, rotate))
+            cached = self._png.get((page, layout, rotate, dark))
             if cached is None:
                 img = self.images[(page, layout)]
                 if self.problems and page != "health":
                     img = render.issues_badge(img, len(self.problems))
+                if dark:
+                    img = render.invert(img)
                 data = render.to_png(img, rotate)
                 cached = (data, '"' + hashlib.md5(data).hexdigest() + '"')
-                self._png[(page, layout, rotate)] = cached
+                self._png[(page, layout, rotate, dark)] = cached
             return cached
 
     def healthy(self) -> bool:
@@ -509,10 +576,13 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
     def serve(request: Request, layout: str, rotate: int, page: str) -> Response:
         check_view(rotate, page)
         state.kindle_view = (page, layout, rotate, state.now())
+        state.device = prefs.device_from(request.query_params, request.client.host if request.client else None, rotate)
         if state.report_kindle(request.query_params.get("battery"), request.query_params.get("charging")):
             state.rerender()
+        elif page == "settings":
+            state.render_settings()  # its details and clock, as of this fetch
         data, etag = state.png(layout, rotate, page)
-        headers = {"ETag": etag, "Cache-Control": "no-cache"}
+        headers = {"ETag": etag, "Cache-Control": "no-cache", "X-Kindle-Settings": prefs.header(state.prefs, state.dark())}
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers=headers)
         return Response(data, media_type="image/png", headers=headers)
@@ -536,7 +606,9 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
         """A tap at raw touch (x, y) on the page the Kindle is showing.
 
         Replies 204 if nothing was hit, otherwise lines for the Kindle to act on:
-        `flash <left> <top> <width> <height>` (panel pixels), `page <name>`, `redraw`.
+        `flash <left> <top> <width> <height> [white]` (panel pixels; white on a dark page),
+        `page <name>`, `redraw`, and from the settings page `rotate <0|90|180|270>`,
+        `light <level>`, `warm <level>`, `clean` (a full flashing redraw) and `exit` (to the library).
         """
         check_view(rotate, page)
         layout = "landscape" if rotate in (90, 270) else "portrait"
@@ -548,7 +620,7 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
         log.info("tap raw=%d,%d panel=%d,%d %s/%s image=%d,%d -> %s", x, y, px, py, page, layout, ix, iy, target.action if target else "-")
         if target is None:
             return Response(status_code=204)
-        lines = ["flash %d %d %d %d" % touch.box_to_panel(target.flash, rotate, size)]
+        lines = ["flash %d %d %d %d" % touch.box_to_panel(target.flash, rotate, size) + (" white" if state.dark() else "")]
         kind, _, arg = target.action.partition(":")
         armed, state.confirm = state.armed(), None  # any tap ends a pending prompt
         if kind == "page":
@@ -579,6 +651,8 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
             else:
                 await asyncio.to_thread(state.command_car, arg)
             lines.append("redraw")
+        elif kind == "set":
+            lines += await asyncio.to_thread(state.apply_setting, arg, armed)  # redraws the page, dropping any prompt
         elif kind == "camera":
             await asyncio.to_thread(state.refresh_cameras)
             lines.append("redraw")
@@ -611,6 +685,8 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
         check_view(0, page)
         if layout not in render.LAYOUTS:
             raise HTTPException(400, f"layout must be one of {', '.join(render.LAYOUTS)}")
+        if page == "settings":
+            state.render_settings()
         data, _ = state.png(layout, 0, page)
         return Response(data, media_type="image/png", headers={"Cache-Control": "no-store"})
 
@@ -681,6 +757,8 @@ def create_app(settings: Settings | None = None, fetch=None, poll: bool = True, 
             "healthy": state.healthy(),
             "kindle": {**state.kindle._asdict(), "reported_at": iso(state.kindle_at)} if state.kindle else None,
             "kindle_view": {"page": view[0], "layout": view[1], "rotate": view[2], "at": iso(view[3])} if view else None,
+            "kindle_device": state.device._asdict() if state.device else None,
+            "settings": {**asdict(state.prefs), "dark_now": state.dark()},
             "bluetti": {
                 "stations": state.bluetti.to_json() if state.bluetti else None,
                 "fetched_at": iso(state.bluetti.fetched_at) if state.bluetti else None,

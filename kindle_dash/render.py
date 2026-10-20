@@ -26,6 +26,7 @@ from .bluetti import BluettiSnapshot, Station  # noqa: E402
 from .car import COMMANDS, CarStatus  # noqa: E402
 from .data import Point, Snapshot  # noqa: E402
 from .plugs import Plug  # noqa: E402
+from .prefs import IDLE_CHOICES, WARM_MAX, KindleDevice, Prefs  # noqa: E402
 from .touch import Target  # noqa: E402
 
 BLACK, INK, DARK, MID, LIGHT, FAINT, WHITE = 0x00, 0x22, 0x55, 0x88, 0xBB, 0xDD, 0xFF
@@ -317,7 +318,7 @@ class _Ctx:
 
 # Pages, in tab order: (name used in URLs and taps, tab label)
 PAGES = (("solar", "SOLAR"), ("bluetti", "BLUETTI"), ("car", "CAR"), ("lights", "PLUGS"), ("tv", "TV"), ("cameras", "CAMERA"))  # "lights" stays the URL name; Kindles remember it
-HIDDEN_PAGES = ("health",)  # no tab: opened by tapping the clock
+HIDDEN_PAGES = ("health", "settings")  # no tab: the clock opens them (STATUS and SETTINGS)
 HEADER_RULE_Y = 126  # the rule under the header; tabs sit above it
 TAB_SIZE, TAB_PAD, TAB_GAP = 29, 14, 12  # six tabs, clear of the Kindle battery, clock and date in portrait
 CLOCK_W = 200  # the date, or the issues badge over it, at the top right; the Kindle's battery sits left of the time above
@@ -348,6 +349,22 @@ def tab_targets() -> list[Target]:
 
 
 TABS_RIGHT = tab_boxes()[-1][0][2]
+MENU = (("health", "STATUS"), ("settings", "SETTINGS"))  # the clock's pages, switched at their top right
+MENU_ROW_H = 80  # the title row on those pages: the title on the left, the switch on the right
+
+
+def menu_boxes(layout: str) -> list[tuple[tuple[int, int, int, int], str]]:
+    w = size(layout)[0]
+    y0 = HEADER_RULE_Y + 4 + GAP
+    bw = 250
+    return [((w - M - (len(MENU) - i) * bw - (len(MENU) - 1 - i) * TAB_GAP, y0, w - M - (len(MENU) - 1 - i) * (bw + TAB_GAP), y0 + 66), f"page:{name}") for i, (name, _) in enumerate(MENU)]
+
+
+def _menu(d: ImageDraw.ImageDraw, layout: str, page: str) -> None:
+    for (box, action), (_, label) in zip(menu_boxes(layout), MENU):
+        active = action == f"page:{page}"
+        d.rounded_rectangle(box, radius=14, fill=BLACK if active else WHITE, outline=BLACK, width=3)
+        _text(d, ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2), label, TAB_SIZE, bold=True, fill=WHITE if active else BLACK, anchor="mm")
 
 
 def header(img: Image.Image, page: str, now: datetime, kindle: KindleBattery | None) -> int:
@@ -590,7 +607,11 @@ def targets(
 ) -> list[Target]:
     """Everything tappable on a page: the tabs and clock, plus a tile per plug, the TV remote's buttons, the camera stills or the car's controls."""
     out = tab_targets() + [clock_target(layout)]
-    if page == "cameras":
+    if page in dict(MENU):
+        out += [Target(box, box, action) for box, action in menu_boxes(layout)]
+    if page == "settings":
+        out += [Target(box, box, action) for _, _, choices in settings_rows(layout).values() for box, action in choices if action]
+    elif page == "cameras":
         out += [Target(box, box, "camera:refresh") for box in camera_boxes(layout, n_cameras)]
     elif page == "lights":
         out += [Target(box, box, f"plug:{p.host}") for box, p in zip(plug_boxes(layout, len(plugs)), plugs)]
@@ -1062,6 +1083,7 @@ def render_cameras(shots, now: datetime, tz, layout: str = "portrait", kindle: K
     if not shots:
         _text(d, (w / 2, h / 2), "No cameras configured (PROTECT_CAMERAS)", 40, bold=True, anchor="mm")
         return quantize(img)
+    photos = []
     for box, shot in zip(camera_boxes(layout, len(shots)), shots):
         x0, y0, x1, y1 = box
         iy1 = y1 - CAPTION_H
@@ -1069,6 +1091,7 @@ def render_cameras(shots, now: datetime, tz, layout: str = "portrait", kindle: K
             pic = photo(shot.image, x1 - x0, iy1 - y0)
             px, py = x0 + (x1 - x0 - pic.width) // 2, y0 + (iy1 - y0 - pic.height) // 2
             img.paste(pic, (px, py))
+            photos.append((px, py, px + pic.width, py + pic.height))
             d.rectangle((px - 2, py - 2, px + pic.width + 1, py + pic.height + 1), outline=BLACK, width=2)
         else:
             d.rounded_rectangle((x0, y0, x1, iy1), radius=14, fill=FAINT, outline=BLACK, width=3)
@@ -1083,7 +1106,9 @@ def render_cameras(shots, now: datetime, tz, layout: str = "portrait", kindle: K
         elif shot.at:
             _text(d, (x1, y1 - 14), f"{shot.at.astimezone(tz):%H:%M:%S}", 28, bold=True, fill=DARK, anchor="rs")
     _text(d, (w - M, h - 16), "UniFi Protect  \u00b7  tap a picture for a new one", 22, fill=DARK, anchor="rs")
-    return quantize(img)
+    out = quantize(img)
+    out.info["photos"] = photos  # dark mode leaves these as they are
+    return out
 
 
 # --------------------------------------------------------------------------- car page
@@ -1394,7 +1419,8 @@ def render_health(checks, now: datetime, tz, layout: str = "portrait", kindle: K
     bad = sum(not c.ok for c in checks)
     y = HEADER_RULE_Y + 4 + GAP
     _text(d, (M, y + 50), "All systems OK" if not bad else f"{bad} problem{'s' if bad != 1 else ''}", 48, bold=True, anchor="ls")
-    y += 80
+    _menu(d, layout, "health")
+    y += MENU_ROW_H
     row_h = min(120, (h - 50 - y) // max(1, len(checks)))
     pill_w = 210
     for c in checks:
@@ -1447,6 +1473,186 @@ def placeholder(message: str, now: datetime, tz, layout: str = "portrait", page:
     _text(d, (w / 2, h / 2 - 20), message, 44, bold=True, anchor="mm")
     _text(d, (w / 2, h / 2 + 50), f"{now.astimezone(tz):%H:%M}", 32, fill=DARK, anchor="mm")
     return quantize(img)
+
+
+# --------------------------------------------------------------------------- settings page
+
+LEVELS = 12  # segments in the brightness and warmth bars
+ROTATIONS = ((0, "PORTRAIT", ""), (90, "LANDSCAPE", "power button right"), (270, "LANDSCAPE", "power button left"), (180, "UPSIDE DOWN", ""))
+SETTINGS_LABEL_H = 46  # a row's label above its buttons
+
+
+def _row_boxes(x0: int, x1: int, y0: int, y1: int, weights: list[float], gap: int = 12) -> list[tuple[int, int, int, int]]:
+    """Boxes across x0..x1, each as wide as its weight's share."""
+    span = x1 - x0 - gap * (len(weights) - 1)
+    out, x = [], float(x0)
+    for wt in weights:
+        bw = span * wt / sum(weights)
+        out.append((round(x), y0, round(x + bw), y1))
+        x += bw + gap
+    return out
+
+
+def settings_rows(layout: str) -> dict[str, tuple[tuple[int, int, int, int], tuple[int, int, int, int], list[tuple[tuple[int, int, int, int], str | None]]]]:
+    """Each settings row: (whole row box, buttons area, [(button box, tap action or None)]).
+
+    One column in portrait; two in landscape (the screen on the left, the rest on the right).
+    """
+    w, h = size(layout)
+    top, bottom = HEADER_RULE_Y + 4 + GAP + MENU_ROW_H, h - 50
+    names = ("rotate", "theme", "light", "warm", "idle", "idlelight", "home", "kindle")
+    tall = {"kindle": 1.7}  # the Kindle's details beside the exit button
+    if layout == "landscape":
+        cw = (w - 2 * M - 2 * GAP) // 2
+        columns = [(M, M + cw, names[:4]), (w - M - cw, w - M, names[4:])]
+    else:
+        columns = [(M, w - M, names)]
+    out = {}
+    for x0, x1, col in columns:
+        unit = (bottom - top) / sum(tall.get(n, 1) for n in col)
+        y = float(top)
+        for name in col:
+            rh = unit * tall.get(name, 1)
+            ry0, ry1 = round(y), round(y + rh) - GAP
+            by0 = ry0 + SETTINGS_LABEL_H
+            by1 = ry1 if name == "kindle" else min(ry1, by0 + 120)
+            boxes: list[tuple[tuple[int, int, int, int], str | None]]
+            if name == "rotate":
+                boxes = [(b, f"set:rotate:{r}") for b, (r, _, _) in zip(_row_boxes(x0, x1, by0, by1, [1] * 4), ROTATIONS)]
+            elif name == "theme":
+                boxes = list(zip(_row_boxes(x0, x1, by0, by1, [1, 1, 1, 1.3]), ("set:theme:light", "set:theme:dark", "set:theme:auto", "set:clean")))
+            elif name in ("light", "warm"):
+                off, bar = _row_boxes(x0, x1, by0, by1, [1.3, 6], gap=24)
+                boxes = [(off, f"set:{name}:0")] + [(b, f"set:{name}:{i + 1}") for i, b in enumerate(_row_boxes(bar[0], bar[2], by0, by1, [1] * LEVELS, gap=6))]
+            elif name == "idle":
+                boxes = [(b, f"set:idle:{v}") for b, v in zip(_row_boxes(x0, x1, by0, by1, [1] * len(IDLE_CHOICES)), IDLE_CHOICES)]
+            elif name == "idlelight":
+                boxes = list(zip(_row_boxes(x0, x1, by0, by1, [1, 1]), ("set:idlelight:0", "set:idlelight:1")))
+            elif name == "home":
+                boxes = [(b, f"set:home:{p}") for b, (p, _) in zip(_row_boxes(x0, x1, by0, by1, [1] * len(PAGES), gap=8), PAGES)]
+            else:  # kindle: details, then the exit button
+                info, ex = _row_boxes(x0, x1, by0, by1, [1.6, 1], gap=24)
+                boxes = [(info, None), (ex, "set:exit")]
+            out[name] = ((x0, ry0, x1, ry1), (x0, by0, x1, by1), boxes)
+            y += rh
+    return out
+
+
+def fmt_uptime(seconds: int) -> str:
+    d, rem = divmod(seconds, 86400)
+    return f"{d} d {rem // 3600} h" if d else f"{rem // 3600} h {rem % 3600 // 60} min"
+
+
+def _choice(d: ImageDraw.ImageDraw, box, label: str, sub: str = "", on: bool = False, size_: int = 32) -> None:
+    """A button: solid black while chosen, outlined otherwise; an optional small line under the label."""
+    x0, y0, x1, y1 = box
+    d.rounded_rectangle(box, radius=14, fill=BLACK if on else WHITE, outline=BLACK, width=3)
+    fg, sg = (WHITE, LIGHT) if on else (BLACK, DARK)
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    if sub:
+        _fitted_text(d, (cx, cy + 2), label, size_, x1 - x0 - 20, bold=True, fill=fg, anchor="ms")
+        _fitted_text(d, (cx, cy + 34), sub, 22, x1 - x0 - 16, fill=sg, anchor="ms")
+    else:
+        _fitted_text(d, (cx, cy), label, size_, x1 - x0 - 20, bold=True, fill=fg, anchor="mm")
+
+
+def _level_bar(d: ImageDraw.ImageDraw, boxes, level: int | None, top: int | None, off_label: str) -> None:
+    """The OFF button and a bar of LEVELS segments, filled up to `level` (of `top`); unknown leaves it empty."""
+    step = None if level is None or not top else round(level * LEVELS / top)
+    _choice(d, boxes[0][0], off_label, on=step == 0)
+    for i, (box, _) in enumerate(boxes[1:], 1):
+        lit = step is not None and i <= step
+        d.rounded_rectangle(box, radius=8, fill=BLACK if lit else WHITE, outline=BLACK, width=3)
+
+
+def render_settings(
+    prefs: Prefs, dev: KindleDevice | None, now: datetime, tz, layout: str = "portrait", kindle: KindleBattery | None = None,
+    confirm: str | None = None, dark_hours: tuple[str, str] = ("21:00", "07:00"),
+) -> Image.Image:  # fmt: skip
+    """Orientation, theme, light and warmth, the idle behaviour, the home tab, and the Kindle's details with an exit button."""
+    img = Image.new("L", size(layout), WHITE)
+    w, h = img.size
+    header(img, "settings", now.astimezone(tz), kindle)
+    d = ImageDraw.Draw(img)
+    _text(d, (M, HEADER_RULE_Y + 4 + GAP + 50), "Settings", 48, bold=True, anchor="ls")
+    _menu(d, layout, "settings")
+    dev = dev or KindleDevice()
+    rows = settings_rows(layout)
+    light_max = dev.light_max or 24
+    labels = {
+        "rotate": "ORIENTATION",
+        "theme": "THEME",
+        "light": "BRIGHTNESS" + ("" if dev.light is None else f"  \u00b7  {dev.light} of {light_max}"),
+        "warm": "WARM LIGHT" + ("" if dev.warm is None else f"  \u00b7  {dev.warm} of {WARM_MAX}"),
+        "idle": "AFTER NO TAPS, GO BACK TO THE HOME TAB",
+        "idlelight": "WHEN IDLE, THE FRONT LIGHT",
+        "home": "HOME TAB",
+        "kindle": "KINDLE",
+    }
+    for name, (row, area, boxes) in rows.items():
+        _fitted_text(d, (row[0] + 4, row[1] + 32), labels[name], 26, row[2] - row[0] - 8, bold=True, fill=DARK, anchor="ls")
+        if name == "rotate":
+            for (box, _), (r, label, sub) in zip(boxes, ROTATIONS):
+                _choice(d, box, label, sub, on=dev.rotate == r)
+        elif name == "theme":
+            subs = ("", "", f"dark {dark_hours[0]}\u2013{dark_hours[1]}")
+            for (box, _), theme, sub in zip(boxes, ("light", "dark", "auto"), subs):
+                _choice(d, box, theme.upper(), sub, on=prefs.theme == theme)
+            _choice(d, boxes[3][0], "CLEAN", "flash the screen clear")
+        elif name == "light":
+            _level_bar(d, boxes, dev.light, light_max, "OFF")
+        elif name == "warm":
+            if dev.warm is None and dev.version:  # an up-to-date Kindle without a warm light
+                _text(d, ((area[0] + area[2]) / 2, (area[1] + area[3]) / 2), "This Kindle has no warm light", 30, fill=DARK, anchor="mm")
+            else:
+                _level_bar(d, boxes, dev.warm, WARM_MAX, "WHITE")
+        elif name == "idle":
+            for box, action in boxes:
+                v = int(action.rsplit(":", 1)[1])
+                _choice(d, box, "NEVER" if v == 0 else f"{v // 60} MIN", on=prefs.idle_return == v)
+        elif name == "idlelight":
+            _choice(d, boxes[0][0], "STAYS ON", on=not prefs.idle_light_off)
+            _choice(d, boxes[1][0], "TURNS OFF", "the next tap turns it on", on=prefs.idle_light_off)
+        elif name == "home":
+            for (box, _), (p, label) in zip(boxes, PAGES):
+                _choice(d, box, label, on=prefs.home == p, size_=26)
+        elif name == "kindle":
+            (info, _), (ex, action) = boxes
+            lines = []
+            if kindle:
+                lines.append((f"Battery {kindle.level}%" + ("  \u00b7  charging" if kindle.charging else ""), False))
+            if dev.wifi_dbm is not None or dev.ip:
+                wifi = f"Wi-Fi {dev.wifi_dbm} dBm" if dev.wifi_dbm is not None else "Wi-Fi"
+                lines.append((wifi + (f"  \u00b7  {dev.ip}" if dev.ip else ""), False))
+            if dev.uptime_s is not None:
+                lines.append((f"Up {fmt_uptime(dev.uptime_s)}", False))
+            if dev.scripts_current:
+                lines.append((f"Scripts {dev.version}", False))
+            else:
+                lines.append(("Kindle scripts out of date:", True))
+                lines.append(("copy kindledash.sh and white.png", True))
+            y = info[1] + 34
+            for text, bold in lines:
+                _fitted_text(d, (info[0] + 4, y), text, 30, info[2] - info[0] - 8, bold=bold, fill=BLACK if bold else INK, anchor="ls")
+                y += 42
+            armed = confirm == action
+            d.rounded_rectangle(ex, radius=18, fill=WHITE, outline=BLACK, width=12 if armed else 4)
+            cx, cy = (ex[0] + ex[2]) / 2, (ex[1] + ex[3]) / 2
+            top_line, big = ("TAP AGAIN TO", "EXIT") if armed else ("BACK TO THE LIBRARY", "EXIT")
+            _fitted_text(d, (cx, cy - 18), top_line, 26, ex[2] - ex[0] - 32, bold=True, fill=DARK, anchor="ms")
+            _fitted_text(d, (cx, cy + 44), big, 60, ex[2] - ex[0] - 32, bold=True, anchor="ms")
+    _text(d, (w - M, h - 16), "Tap a tab to go back", 22, fill=DARK, anchor="rs")
+    return quantize(img)
+
+
+def invert(img: Image.Image) -> Image.Image:
+    """Dark mode: white on black, except the photos (img.info["photos"]), which would turn negative."""
+    from PIL import ImageOps
+
+    out = ImageOps.invert(img)
+    for box in img.info.get("photos", ()):
+        out.paste(img.crop(box), box[:2])
+    return out
 
 
 def to_png(img: Image.Image, rotate: int = 0) -> bytes:

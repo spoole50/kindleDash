@@ -60,6 +60,11 @@ class Settings:
     car_wake_min_seconds: int = 1800
     car_climate_temp: float = 72  # what START CLIMATE sets, in the car's units (°F in the US)
     car_climate_minutes: int = 10
+    # What the Kindle's settings page changes (theme, home tab, idle timer), saved
+    # across restarts; empty = not saved. AUTO theme is dark from dark_from to dark_until.
+    prefs_file: str = ""
+    dark_from: str = "21:00"
+    dark_until: str = "07:00"
     # Raw touch coordinates -> panel pixels (portrait 1236 x 1648). The defaults
     # assume the touch panel already reports panel pixels.
     touch_swap_xy: bool = False
@@ -110,6 +115,9 @@ class Settings:
             car_wake_min_seconds=max(600, int(env("CAR_WAKE_MIN_SECONDS", cls.car_wake_min_seconds))),
             car_climate_temp=float(env("CAR_CLIMATE_TEMP", cls.car_climate_temp)),
             car_climate_minutes=max(1, min(30, int(env("CAR_CLIMATE_MINUTES", cls.car_climate_minutes)))),
+            prefs_file=env("PREFS_FILE", "/data/settings.json"),
+            dark_from=_hhmm(env("DARK_FROM", cls.dark_from), cls.dark_from),
+            dark_until=_hhmm(env("DARK_UNTIL", cls.dark_until), cls.dark_until),
             touch_swap_xy=_flag(env("TOUCH_SWAP_XY", "")),
             touch_flip_x=_flag(env("TOUCH_FLIP_X", "")),
             touch_flip_y=_flag(env("TOUCH_FLIP_Y", "")),
@@ -125,6 +133,17 @@ def _list(value: str) -> tuple[str, ...]:
 def _plugs(value: str) -> list[tuple[str, str]]:
     """"ip=kind,ip" -> [(ip, kind), (ip, "")]."""
     return [(h.strip(), k.strip()) for h, _, k in (item.partition("=") for item in _list(value))]
+
+
+def _hhmm(value: str, default: str) -> str:
+    """"7:30" -> "07:30"; `default` if it isn't a time of day."""
+    h, _, m = value.strip().partition(":")
+    try:
+        if 0 <= int(h) < 24 and 0 <= int(m or 0) < 60:
+            return f"{int(h):02d}:{int(m or 0):02d}"
+    except ValueError:
+        pass
+    return default
 
 
 def _flag(value: str) -> bool:

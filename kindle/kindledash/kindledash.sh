@@ -1,6 +1,7 @@
 #!/bin/sh
 # Main loop: fetch the dashboard PNG and draw it with FBInk when it changes.
 BIN="$(cd "$(dirname "$0")" && pwd)"
+KD_VERSION=2026-10-19  # sent with each fetch; the server's settings page says when the Kindle needs a newer copy
 . "$BIN/config.sh"
 
 . "$BIN/common.sh"
@@ -70,6 +71,33 @@ idle_seconds() {
 }
 mark_activity main
 rm -f "$DARK_FILE"
+
+# The server's settings page: X-Kindle-Settings on each image ("home=solar
+# idle=300 idlelight=1 theme=dark full=6") overrides the values above. Without
+# one (an older server, or no answer) they stay as config.sh set them.
+HEADERS="$STATE/headers.txt"
+CONFIG_FULL_REFRESH_EVERY=$FULL_REFRESH_EVERY
+THEME=""
+apply_settings() {
+    line="$(tr -d '\r' < "$HEADERS" 2>/dev/null | grep -i '^x-kindle-settings:' | tail -n 1 | cut -d: -f2-)"
+    [ -n "$line" ] || return 0
+    FULL_REFRESH_EVERY=$CONFIG_FULL_REFRESH_EVERY
+    for kv in $line; do
+        v="${kv#*=}"
+        case "$kv" in
+            home=*) case "$v" in ''|*[!a-z]*) ;; *) HOME_PAGE=$v ;; esac ;;
+            idle=*) case "$v" in ''|*[!0-9]*) ;; *) IDLE_RETURN=$v ;; esac ;;
+            idlelight=*) case "$v" in 0|1) IDLE_BACKLIGHT_OFF=$v ;; esac ;;
+            full=*) case "$v" in ''|0|*[!0-9]*) ;; *) FULL_REFRESH_EVERY=$v ;; esac ;;
+            theme=*)
+                if [ -n "$THEME" ] && [ "$v" != "$THEME" ]; then
+                    log "theme $v"
+                    last_sum=""  # light <-> dark: a full flashing redraw, or the old page ghosts through
+                fi
+                THEME=$v ;;
+        esac
+    done
+}
 
 # The rotation after the current one in $ROTATIONS, wrapping around.
 next_rotation() {
@@ -154,11 +182,26 @@ send_tap() {
         *) log "tap at $1,$2 refused or failed: HTTP ${code:-none} $(head -c 100 "$STATE/tap.txt" 2>/dev/null)"; return ;;
     esac
     flashed=""; wake=""
-    while read -r cmd a b c d; do
+    while read -r cmd a b c d e; do
         case "$cmd" in
-            flash) "$FBINK" -q -g file="$BIN/black.png",x="$a",y="$b",w="$c",h="$d" 2>>"$LOG"; flashed=1 ;;
+            flash)
+                [ "$e" = white ] && img=white.png || img=black.png  # white on a dark page
+                "$FBINK" -q -g file="$BIN/$img",x="$a",y="$b",w="$c",h="$d" 2>>"$LOG"; flashed=1 ;;
             page) case "$a" in ''|*[!a-z]*) ;; *) echo "$a" > "$PAGE_FILE"; wake=1 ;; esac ;;
             redraw) wake=1 ;;
+            # from the settings page
+            rotate) case "$a" in 0|90|180|270)
+                        echo "$a" > "$ROT_FILE.tap" && mv "$ROT_FILE.tap" "$ROT_FILE"; wake=1 ;; esac ;;
+            light) case "$a" in ''|*[!0-9]*) ;;
+                       0) backlight_off ;;
+                       *) rm -f "$DARK_FILE"; lipc-set-prop com.lab126.powerd flIntensity "$a"; log "backlight $a" ;; esac ;;
+            warm) case "$a" in ''|*[!0-9]*) ;; *) lipc-set-prop com.lab126.powerd currentAmberLevel "$a"; log "warm light $a" ;; esac ;;
+            clean) touch "$STATE/clean"; wake=1 ;;
+            exit)
+                "$FBINK" -q -c -f -m -y 10 "Returning to the library..." 2>/dev/null
+                log "settings page -> exit to library"; sync
+                kill -USR1 "$MAIN_PID"
+                return ;;
         esac
     done < "$STATE/tap.txt"
     if [ -n "$wake" ] && ! kill -ALRM "$MAIN_PID" 2>/dev/null; then
@@ -228,15 +271,24 @@ touch_watcher() {
 }
 
 # The Kindle's own battery, sent with each fetch so the server can show it in
-# the header. Sets BATTERY_QS to "&battery=<0-100>&charging=<0|1>", or to
-# nothing if the level is unreadable.
-read_battery() {
-    BATTERY_QS=""
+# the header, plus what its settings page shows: the front and warm light, the
+# Wi-Fi signal, uptime and this script's version. Sets REPORT_QS to
+# "&battery=..&charging=..&light=..", leaving out anything unreadable.
+qs_num() {  # qs_num <name> <value>: "&name=value" if value is a whole number (or a negative one)
+    case "${2#-}" in ''|*[!0-9]*) ;; *) printf '&%s=%s' "$1" "$2" ;; esac
+}
+read_report() {
+    REPORT_QS="&ver=$KD_VERSION"
     bat="$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)"
     chg="$(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null)"
-    case "$bat" in ''|*[!0-9]*) bat=""; return ;; esac
     case "$chg" in 1) ;; *) chg=0 ;; esac
-    BATTERY_QS="&battery=$bat&charging=$chg"
+    case "$bat" in ''|*[!0-9]*) bat="" ;; *) REPORT_QS="$REPORT_QS&battery=$bat&charging=$chg" ;; esac
+    REPORT_QS="$REPORT_QS$(qs_num light "$(lipc-get-prop com.lab126.powerd flIntensity 2>/dev/null)")"
+    REPORT_QS="$REPORT_QS$(qs_num lightmax "$(lipc-get-prop com.lab126.powerd flMaxIntensity 2>/dev/null)")"
+    REPORT_QS="$REPORT_QS$(qs_num warm "$(lipc-get-prop com.lab126.powerd currentAmberLevel 2>/dev/null)")"
+    # /proc/net/wireless: "wlan0: 0000   54.  -56.  -256 ..." (link quality, signal dBm)
+    REPORT_QS="$REPORT_QS$(qs_num wifi "$(sed -n 's/^ *wlan0: *[0-9]* *[0-9]*\. *\(-[0-9]*\)\..*/\1/p' /proc/net/wireless 2>/dev/null)")"
+    REPORT_QS="$REPORT_QS$(qs_num up "$(cut -d. -f1 /proc/uptime)")"
 }
 
 # Small inverted label drawn over the last image, on panel row MARKER_ROW.
@@ -317,6 +369,18 @@ while true; do
     fi
     if [ -n "$refresh_now" ]; then
         refresh_now=""
+        want="$(cat "$ROT_FILE" 2>/dev/null)"  # the settings page may have chosen an orientation
+        case "$want" in 0|90|180|270) if [ "$want" != "$ROTATE" ]; then
+            ROTATE=$want
+            apply_rotation
+            "$FBINK" -q -c -f -m -y 10 "Rotating..." 2>/dev/null
+            log "rotated to $ROTATE from the settings page: $FULL_URL"
+            last_sum=""; draws=0
+        fi ;; esac
+        if [ -f "$STATE/clean" ]; then
+            rm -f "$STATE/clean"
+            last_sum=""  # a full flashing redraw of the same page
+        fi
         old_page=$PAGE
         read_page
         if [ "$PAGE" != "$old_page" ]; then
@@ -328,8 +392,9 @@ while true; do
             force=1
         fi
     fi
-    read_battery
-    if curl -s -f -H "X-Kindle-Token: $TOKEN" --connect-timeout "$CONNECT_TIMEOUT" -m "$MAX_TIME" -o "$TMP" "$FULL_URL$BATTERY_QS"; then
+    read_report
+    if curl -s -f -H "X-Kindle-Token: $TOKEN" --connect-timeout "$CONNECT_TIMEOUT" -m "$MAX_TIME" -D "$HEADERS" -o "$TMP" "$FULL_URL$REPORT_QS"; then
+        apply_settings
         sum="$(md5sum "$TMP" | cut -d' ' -f1)"
         if [ "$sum" != "$last_sum" ] || [ -n "$force" ]; then
             mv "$TMP" "$PNG"

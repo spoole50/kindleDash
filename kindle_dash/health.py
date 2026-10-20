@@ -88,6 +88,14 @@ def checks(state, now: datetime) -> list[Check]:
             seen = f"car reported {hm(st.reported_at)}, " if st.reported_at else ""
             out.append(Check("Car (Blue Link)", True, f"{pct}{seen}checked {hm(car.checked_at)}"))
 
+    dev = state.device
+    if dev is not None:  # after the Kindle's first fetch since the server started
+        if dev.scripts_current:
+            out.append(Check("Kindle scripts", True, f"Version {dev.version}"))
+        else:
+            have = f"Version {dev.version}" if dev.version else "An older version"
+            out.append(Check("Kindle scripts", False, f"{have}: copy kindledash.sh and white.png to the Kindle for the settings page"))
+
     for shot in state.shots:
         name = f"Camera: {shot.label}"
         if shot.error:
