@@ -193,6 +193,12 @@ docker compose up -d --build
 curl -s localhost:8765/health
 ```
 
+The container is capped at `mem_limit: 512m`. The Pi has 4 GB shared with
+everything else, and this process has grown to about 370 MB within 90 minutes.
+The cap only takes effect if the kernel has memory cgroups
+(`cgroup_enable=memory` in `/boot/firmware/cmdline.txt`); `docker stats` showing
+`0B / 0B` means they're off. See `../README.md`.
+
 Set `CONTROL_TOKEN` and `ADMIN_PASSWORD` in `.env` (see [Security](#security)), then open
 `http://<pi>:8765/admin` in a browser and log in as `admin`.
 

@@ -7,6 +7,7 @@ services:
     build: .
     image: kindle-solar-dashboard:latest
     container_name: kindle-solar-dashboard
+    mem_limit: 512m
     restart: unless-stopped
     ports:
       - "8765:8000"
