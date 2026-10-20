@@ -17,7 +17,7 @@ KINDLE = {"X-Kindle-Token": TOKEN}
 TZ = ZoneInfo("America/Los_Angeles")
 NOW = datetime(2026, 10, 19, 20, 0, tzinfo=timezone.utc)
 GRAYS = {i * 0x11 for i in range(16)}
-DEVICE_QS = "&battery=80&charging=0&light=12&lightmax=24&warm=16&wifi=-56&up=3600&ver=" + prefs.KINDLE_SCRIPT_VERSION
+DEVICE_QS = "&battery=80&charging=0&light=12&lightmax=24&warm=16&wifi=4&wifimax=5&up=3600&ver=" + prefs.KINDLE_SCRIPT_VERSION
 
 
 def _app(tmp_path, **kw):
@@ -61,16 +61,16 @@ def test_auto_theme_follows_the_dark_hours():
 
 
 def test_device_report_drops_anything_malformed():
-    dev = prefs.device_from({"light": "12", "lightmax": "24", "warm": "x", "wifi": "-56", "up": "-3", "ver": prefs.KINDLE_SCRIPT_VERSION}, "10.0.0.9", 90)
-    assert dev == KindleDevice(12, 24, None, -56, None, prefs.KINDLE_SCRIPT_VERSION, "10.0.0.9", 90)
+    dev = prefs.device_from({"light": "12", "lightmax": "24", "warm": "x", "wifi": "4", "wifimax": "5", "up": "-3", "ver": prefs.KINDLE_SCRIPT_VERSION}, "10.0.0.9", 90)
+    assert dev == KindleDevice(12, 24, None, 4, 5, None, prefs.KINDLE_SCRIPT_VERSION, "10.0.0.9", 90)
     assert dev.scripts_current
     assert prefs.device_from({"ver": "<script>"}, None, 0).version is None
     assert not prefs.device_from({}, None, 0).scripts_current
 
 
 def test_settings_page_renders_every_state():
-    devices = [None, KindleDevice(rotate=270), KindleDevice(0, 24, None, -80, 90000, prefs.KINDLE_SCRIPT_VERSION, "10.0.0.9", 0),
-               KindleDevice(24, 24, 24, -40, 60, prefs.KINDLE_SCRIPT_VERSION, "10.0.0.9", 180)]  # fmt: skip
+    devices = [None, KindleDevice(rotate=270), KindleDevice(0, 24, None, 0, 5, 90000, prefs.KINDLE_SCRIPT_VERSION, "10.0.0.9", 0),
+               KindleDevice(24, 24, 24, 5, 5, 60, prefs.KINDLE_SCRIPT_VERSION, "10.0.0.9", 180)]  # fmt: skip
     for layout in render.LAYOUTS:
         for dev in devices:
             for p, confirm in ((Prefs(), None), (Prefs("dark", "cameras", 0, False), "set:exit"), (Prefs("auto", "car", 1800), None)):

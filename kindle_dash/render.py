@@ -1621,8 +1621,8 @@ def render_settings(
             lines = []
             if kindle:
                 lines.append((f"Battery {kindle.level}%" + ("  \u00b7  charging" if kindle.charging else ""), False))
-            if dev.wifi_dbm is not None or dev.ip:
-                wifi = f"Wi-Fi {dev.wifi_dbm} dBm" if dev.wifi_dbm is not None else "Wi-Fi"
+            if dev.wifi is not None or dev.ip:
+                wifi = f"Wi-Fi {dev.wifi} of {dev.wifi_max or 5} bars" if dev.wifi is not None else "Wi-Fi"
                 lines.append((wifi + (f"  \u00b7  {dev.ip}" if dev.ip else ""), False))
             if dev.uptime_s is not None:
                 lines.append((f"Up {fmt_uptime(dev.uptime_s)}", False))

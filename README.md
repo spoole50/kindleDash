@@ -378,7 +378,7 @@ The Kindle shows "Rotating...", fetches the other layout and does a full refresh
 The current orientation is saved in `kindledash/rotation`, so it survives restarts. Delete that file to go back to the first entry in `ROTATIONS`.
 To turn landscape the other way, swap `270` for `90` in `ROTATIONS`.
 
-The first 20 touches of each run are logged with their raw coordinates, for example `touch 2100ms down x=... y=...`.
+Every touch is logged with its length, raw coordinates and what became of it, for example `touch 96ms down x=... y=... up x=... y=... -> tap, HTTP 200` or `-> ignored`.
 The touch panel's axes don't necessarily match the screen's. To accept the hold only in one area, such as a corner, touch that corner a few times, read the coordinates from the log, and set `TOUCH_AREA="xmin ymin xmax ymax"`.
 `TOUCH_ROTATE=0` or `REMOTE_ROTATE=0` turns either trigger off.
 

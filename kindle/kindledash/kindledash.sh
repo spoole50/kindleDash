@@ -1,7 +1,7 @@
 #!/bin/sh
 # Main loop: fetch the dashboard PNG and draw it with FBInk when it changes.
 BIN="$(cd "$(dirname "$0")" && pwd)"
-KD_VERSION=2026-10-19.2  # sent with each fetch; the server's settings page says when the Kindle needs a newer copy
+KD_VERSION=2026-10-19.3  # sent with each fetch; the server's settings page says when the Kindle needs a newer copy
 . "$BIN/config.sh"
 
 . "$BIN/common.sh"
@@ -223,7 +223,6 @@ EV_BTN_TOUCH=$((1 + 330 * 65536))
 EV_MT_TRACKING_ID=$((3 + 57 * 65536))  # 4294967295 (-1) = finger lifted
 EV_MT_X=$((3 + 53 * 65536)); EV_MT_Y=$((3 + 54 * 65536))
 EV_ABS_X=3; EV_ABS_Y=$((3 + 65536))
-TOUCH_LOG_MAX=20  # log coordinates for the first touches of each run
 
 in_touch_area() {
     [ -z "$TOUCH_AREA" ] && return 0
@@ -233,7 +232,7 @@ in_touch_area() {
 
 touch_watcher() {
     exec 4< "$TOUCH_DEV" || { log "cannot open $TOUCH_DEV"; return; }
-    down_s=""; down_us=""; sx=""; sy=""; x=""; y=""; logged=0
+    down_s=""; down_us=""; sx=""; sy=""; x=""; y=""
     while :; do
         set -- $(dd bs=1024 count=1 <&4 2>/dev/null | od -An -tu4 -v)
         [ $# -ge 4 ] || { sleep 1; continue; }
@@ -252,20 +251,22 @@ touch_watcher() {
             elif [ -n "$down_s" ]; then
                 ms=$(( (s - down_s) * 1000 + (us - down_us) / 1000 ))
                 down_s=""
-                if [ $logged -lt $TOUCH_LOG_MAX ]; then
-                    logged=$((logged + 1))
-                    log "touch ${ms}ms down x=$sx y=$sy up x=$x y=$y"
-                fi
+                # one line per touch, saying what became of it (the server logs the taps it gets too)
+                what="down x=$sx y=$sy up x=$x y=$y"
                 if [ "$ms" -lt "$TAP_MAX_MS" ] && [ -f "$DARK_FILE" ]; then
                     # dark from going idle: this tap only brings the light back
+                    log "touch ${ms}ms $what -> light on (was off from idle)"
                     rm -f "$DARK_FILE"
                     mark_activity touch
                     backlight_on
                 elif [ "$TAPS" = "1" ] && [ "$ms" -lt "$TAP_MAX_MS" ]; then
                     send_tap "${sx:-$x}" "${sy:-$y}"
+                    log "touch ${ms}ms $what -> tap, HTTP ${code:-none}"
                 elif [ "$TOUCH_ROTATE" = "1" ] && [ "$ms" -ge "$TOUCH_HOLD_MS" ] && [ "$ms" -le "$TOUCH_MAX_MS" ] && in_touch_area; then
-                    log "touch hold ${ms}ms at x=$sx y=$sy -> rotate"
+                    log "touch ${ms}ms $what -> hold: rotate"
                     kill -USR2 "$MAIN_PID"
+                else
+                    log "touch ${ms}ms $what -> ignored (taps are under ${TAP_MAX_MS}ms, holds ${TOUCH_HOLD_MS}-${TOUCH_MAX_MS}ms)"
                 fi
             fi
         done
@@ -288,8 +289,9 @@ read_report() {
     REPORT_QS="$REPORT_QS$(qs_num light "$(lipc-get-prop com.lab126.powerd flIntensity 2>/dev/null)")"
     REPORT_QS="$REPORT_QS$(qs_num lightmax "$(lipc-get-prop com.lab126.powerd flMaxIntensity 2>/dev/null)")"
     REPORT_QS="$REPORT_QS$(qs_num warm "$(lipc-get-prop com.lab126.powerd currentAmberLevel 2>/dev/null)")"
-    # /proc/net/wireless: "wlan0: 0000   54.  -56.  -256 ..." (link quality, signal dBm)
-    REPORT_QS="$REPORT_QS$(qs_num wifi "$(sed -n 's/^ *wlan0: *[0-9]* *[0-9]*\. *\(-[0-9]*\)\..*/\1/p' /proc/net/wireless 2>/dev/null)")"
+    # the signal in bars, like the Kindle's status bar: "5/5"
+    ss="$(lipc-get-prop com.lab126.wifid signalStrength 2>/dev/null)"
+    case "$ss" in */*) REPORT_QS="$REPORT_QS$(qs_num wifi "${ss%%/*}")$(qs_num wifimax "${ss#*/}")" ;; esac
     REPORT_QS="$REPORT_QS$(qs_num up "$(cut -d. -f1 /proc/uptime)")"
 }
 
