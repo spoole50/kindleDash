@@ -173,6 +173,11 @@ def test_command_dispatch():
         setattr(tv.atv, part, Recorder(calls, part))
     tv.power_on = True
 
+    async def stale_cache_says_on():
+        return False  # the TV itself says it's asleep
+
+    tv.refresh_power = stale_cache_says_on
+
     async def run():
         for action in ("up", "play_pause", "volume_down", "power", "app:com.netflix.Netflix"):
             assert await tv.command(action)
@@ -182,7 +187,7 @@ def test_command_dispatch():
         ("remote_control.up",),
         ("remote_control.play_pause",),
         ("audio.volume_down",),
-        ("power.turn_off",),
+        ("power.turn_on",),
         ("apps.launch_app", "com.netflix.Netflix"),
     ]
 

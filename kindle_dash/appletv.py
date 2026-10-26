@@ -19,7 +19,7 @@ log = logging.getLogger("kindle_dash.appletv")
 PROTOCOLS = ("companion", "airplay")  # pairing order: buttons first, then now playing
 REMOTE_KEYS = ("up", "down", "left", "right", "select", "menu", "home", "play_pause", "skip_forward", "skip_backward")
 AUDIO_KEYS = ("volume_up", "volume_down")
-RETRY_S = 30
+RETRY_S = 30  # also how often the power state is re-read while connected
 
 
 @dataclass(frozen=True)
@@ -135,7 +135,7 @@ class AppleTV:
                 pass
 
     async def run(self) -> None:
-        """Background task: (re)connect whenever paired and not connected."""
+        """Background task: (re)connect whenever paired and not connected; keep the power state fresh."""
         while True:
             if self.atv is None and self.paired() and not self.pairing:
                 try:
@@ -144,7 +144,29 @@ class AppleTV:
                     self.error = f"{type(exc).__name__}: {exc}"
                     log.warning("Apple TV connect failed: %s", self.error)
                     self.on_change()
+            elif self.atv is not None:
+                await self.refresh_power()
             await asyncio.sleep(RETRY_S)
+
+    async def refresh_power(self) -> bool | None:
+        """Ask the TV whether it's awake. Its pushed power events stop arriving on
+        a long-lived connection, so the state pyatv caches goes stale (stuck "on")."""
+        from pyatv.const import Protocol
+        from pyatv.protocols.companion import CompanionPower
+
+        try:
+            companion = self.atv.power.get(Protocol.Companion)
+            status = await asyncio.wait_for(companion.api.fetch_attention_state(), 5)
+        except Exception as exc:
+            log.debug("power state unavailable: %s", exc)
+            return self.power_on
+        state = CompanionPower._system_status_to_power_state(status)
+        power_on = None if state.name == "Unknown" else state.name == "On"
+        if power_on is not None and power_on != self.power_on:
+            log.info("Apple TV power %s", "on" if power_on else "off")
+            self.power_on = power_on
+            self.on_change()
+        return self.power_on
 
     # pyatv listeners -------------------------------------------------
 
@@ -192,7 +214,9 @@ class AppleTV:
             elif action in AUDIO_KEYS:
                 await getattr(atv.audio, action)()
             elif action == "power":
-                await (atv.power.turn_off() if self.power_on else atv.power.turn_on())
+                on = await self.refresh_power()
+                await (atv.power.turn_off() if on else atv.power.turn_on())
+                self.power_on = not on  # until the next refresh says otherwise
             elif action.startswith("app:"):
                 await atv.apps.launch_app(action[4:])
             else:
